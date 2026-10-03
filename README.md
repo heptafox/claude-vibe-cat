@@ -4,6 +4,10 @@ A tiny desktop cat that shows what [Claude Code](https://claude.com/claude-code)
 
 Free and open source under the MIT license. One Swift file, no dependencies, and nothing leaves your machine.
 
+<p align="center"><img src="docs/demo.gif" width="520" alt="Demo: the cat thinks, reads, edits, sweats through a failing test, asks for permission, then celebrates"></p>
+
+<p align="center"><sub>A scripted session: prompt, reading, editing, a failing test, a permission request, done.</sub></p>
+
 ## Screenshots
 
 <table>
