@@ -456,7 +456,7 @@ struct BubbleView: View {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 7) {
                     Image(systemName: b.icon).foregroundStyle(tint)
-                    Text(b.title).fontWeight(.bold).lineLimit(1)
+                    Text(b.title).fontWeight(.bold).lineLimit(1).layoutPriority(1)  // the title wins; the project chip shrinks first
                     Spacer(minLength: 8)
                     if !b.project.isEmpty {
                         Text(b.project).font(.system(size: 11, weight: .bold)).foregroundStyle(tint).lineLimit(1)

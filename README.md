@@ -4,6 +4,15 @@ A tiny desktop cat that shows what [Claude Code](https://claude.com/claude-code)
 
 Free and open source under the MIT license. One Swift file, no dependencies, and nothing leaves your machine.
 
+## Screenshots
+
+<table>
+<tr><td align="center"><img src="docs/think.png" width="400" alt="Thinking about your prompt"><br><sub>Thinking about your prompt</sub></td><td align="center"><img src="docs/read.png" width="400" alt="Reading: curious, eyes scanning"><br><sub>Reading: curious, eyes scanning</sub></td></tr>
+<tr><td align="center"><img src="docs/edit.png" width="400" alt="Editing: focused, tongue out"><br><sub>Editing: focused, tongue out</sub></td><td align="center"><img src="docs/grind.png" width="400" alt="Grinding through a long task: sweating"><br><sub>Grinding through a long task: sweating</sub></td></tr>
+<tr><td align="center"><img src="docs/oops.png" width="400" alt="A tool failed: ears back, error shown"><br><sub>A tool failed: ears back, error shown</sub></td><td align="center"><img src="docs/ask.png" width="400" alt="Needs your permission: bouncing, pleading"><br><sub>Needs your permission: bouncing, pleading</sub></td></tr>
+<tr><td align="center"><img src="docs/done.png" width="400" alt="Done, with Claude's own summary"><br><sub>Done, with Claude's own summary</sub></td><td align="center"><img src="docs/menu.png" width="400" alt="Click the cat for its menu"><br><sub>Click the cat for its menu</sub></td></tr>
+</table>
+
 ## What it does
 
 - **Reacts to the task.** Curious while reading files, focused while editing, busy while running commands, and thoughtful while thinking. The longer a task grinds on, the more it sweats.
