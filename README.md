@@ -21,8 +21,8 @@ Free and open source under the MIT license. One Swift file, no dependencies, and
 
 - **Reacts to the task.** Curious while reading files, focused while editing, busy while running commands, and thoughtful while thinking. The longer a task grinds on, the more it sweats.
 - **Says what's happening.** A speech bubble shows the current step. When Claude finishes, it shows what Claude concluded.
-- **Gets your attention.** A permission request makes the cat bounce and chirp, and it keeps nagging until you answer. Click the bubble to jump to your terminal.
-- **Reports failures.** A failed tool call gives it an "oops" face with the error.
+- **Gets your attention.** A permission request makes the cat bounce and chirp, shows what Claude wants to run, and keeps nagging until you answer. Click the bubble to jump to your terminal.
+- **Reports failures.** A failed tool call gives it an "oops" face with the error. If Claude itself stops on an API error, such as a rate limit or a billing problem, the cat says so and keeps saying so until you go back.
 - **Handles several sessions.** One session's chatter never hides another session's request.
 - **Stays out of the way.** Bubbles auto-hide, close with the x, and hide when you hover over them. Permission requests are the one exception to hover-hide, so you can still click them.
 - **Faces only, if you prefer.** Click the cat and choose **Face only** to drop the speech bubbles and keep just the reactions and sounds. **Last** shows the latest message on demand.
@@ -31,6 +31,7 @@ Free and open source under the MIT license. One Swift file, no dependencies, and
 ## Requirements
 
 - macOS 14 or newer
+- A current Claude Code (the hooks it uses arrived in 2.1)
 - Xcode command line tools: `xcode-select --install`
 - `jq`: `brew install jq`
 
@@ -45,7 +46,7 @@ cd claude-vibe-cat
 
 Then restart any open Claude Code sessions, because hooks load at session start. To launch at login, add the built `vibecat` to System Settings, General, Login Items.
 
-`install.sh` backs up your settings to `~/.claude/settings.json.bak` and **replaces** any hooks you already have on the seven events it uses: PreToolUse, PostToolUse, PostToolUseFailure, Notification, UserPromptSubmit, Stop and SessionEnd. The hooks point at this folder's `hook.sh`, so keep the folder where it is, or re-run the installer after moving it.
+`install.sh` backs up your settings to `~/.claude/settings.json.bak` and adds its hook next to any you already have, on eight events: PreToolUse, PostToolUseFailure, PermissionRequest, Notification, UserPromptSubmit, Stop, StopFailure and SessionEnd. Re-run it after pulling a new version, since that list can change. The hooks point at this folder's `hook.sh`, so keep the folder where it is, or re-run the installer after moving it.
 
 ## Using it
 
@@ -63,7 +64,7 @@ Drag the cat to move it. It remembers its position. Right-clicking it offers the
 
 ## Privacy
 
-`hook.sh` writes a trimmed copy of each Claude Code event to `~/.vibecat/events.jsonl`. It drops file contents and edit text and cuts long strings to 300 characters. It keeps prompts, shell commands and file names so the bubble can show them, and the log is plain text on your disk. VibeCat makes no network requests. Settings live in the `vibecat` preferences domain.
+`hook.sh` writes a trimmed copy of each Claude Code event to `~/.vibecat/events.jsonl`. It drops file contents and edit text and cuts long strings to 300 characters. It keeps prompts, shell commands and file names so the bubble can show them. The log is plain text, readable only by your user account. VibeCat makes no network requests. Settings live in the `vibecat` preferences domain.
 
 ## How it works
 
@@ -72,9 +73,9 @@ Drag the cat to move it. It remembers its position. Right-clicking it offers the
 ## Troubleshooting
 
 - **The cat never reacts.** Restart your Claude Code session, since hooks only load at startup. Check that `~/.vibecat/events.jsonl` grows while Claude works, and that `jq` is installed.
-- **No Oops face.** The cat needs the PostToolUse hooks. Re-run `./install.sh`, then restart the session.
+- **No Oops face, or no "Claude stopped".** The cat needs the PostToolUseFailure and StopFailure hooks. Re-run `./install.sh`, then restart the session.
 - **The cat is off-screen.** Quit it, run `defaults delete vibecat origin`, and start it again.
-- **Clicking a bubble doesn't focus my terminal.** Only iTerm, Terminal, VS Code, Warp, Ghostty and Hyper are supported, and only at app level, not per tab.
+- **Clicking a bubble doesn't focus my terminal.** The hook records which app launched the shell, so any terminal started from the Finder, Dock or Spotlight works, at app level and not per tab. A session over SSH, or in a tmux server started elsewhere, has no terminal app to report.
 
 ## Uninstall
 

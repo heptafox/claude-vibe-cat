@@ -13,11 +13,17 @@ let defaults = UserDefaults.standard
 
 struct Bubble: Equatable {
     var icon: String, title: String, detail = "", code = "", project = ""
+    var session = ""  // set when the bubble is a session waiting on you: click jumps to its terminal, close acknowledges it
 }
 
 func str(_ v: Any?) -> String { (v as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
 func firstLine(_ v: Any?) -> String { str(v).components(separatedBy: .newlines)[0] }
 func fileName(_ v: Any?) -> String { (str(v) as NSString).lastPathComponent }
+/// Enough markdown stripping for a two-line bubble: headings, bullets, numbering, bold, backticks, newlines.
+func plain(_ md: String) -> String {
+    md.replacingOccurrences(of: #"(?m)^\s*(#{1,6}\s*|[-*•]\s+|\d+\.\s+)|\*\*|`+"#, with: "", options: .regularExpression)
+        .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression).trimmingCharacters(in: .whitespaces)
+}
 
 func describe(tool: String, _ i: [String: Any]) -> Bubble {
     switch tool {
@@ -89,7 +95,7 @@ struct Look {
     var mood = Mood.idle, blink = false
     var effort = 0.0      // 0 fresh … 1 grinding: adds furrowed brows and a sweat drop
     var eventAt = Date.distantPast  // ears twitch right after an event
-    var badge = false     // minimised with a permission waiting: small "!" so you still notice
+    var badge = false     // minimised with an ask or a stopped session waiting: small "!" so you still notice
 }
 
 @MainActor final class Model: ObservableObject {
@@ -107,11 +113,12 @@ struct Look {
     /// Sessions waiting on the user. Shown whenever nothing newer is up, cleared only when *that* session moves on.
     var pending: [String: Pend] = [:]
     var hideAt = Date.distantFuture
-    /// Permission asks outrank idle waits; otherwise oldest first. Closed (muted) ones stay quiet.
+    /// Asks and stop failures outrank idle waits; otherwise oldest first. Closed (muted) ones stay quiet.
     var firstPending: (key: String, value: Pend)? {
         pending.filter { !muted.contains($0.key) }
-            .min { ($0.value.mood == .ask ? 0 : 1, $0.value.since.timeIntervalSince1970) < ($1.value.mood == .ask ? 0 : 1, $1.value.since.timeIntervalSince1970) }
+            .min { ($0.value.mood == .wait ? 1 : 0, $0.value.since.timeIntervalSince1970) < ($1.value.mood == .wait ? 1 : 0, $1.value.since.timeIntervalSince1970) }
     }
+    var askDetail: [String: Bubble] = [:]  // what PermissionRequest said a session is about to ask for; the Notification that follows shows it
     var lastEvent = Date()
     var sessions: [String: (start: Date, steps: Int, seen: Date)] = [:]
     var offset: UInt64 = 0
@@ -127,16 +134,16 @@ struct Look {
 
     func dismiss() { withAnimation(.easeOut(duration: 0.2)) { bubble = nil; menu = false; peeking = false } }
 
-    /// The user closed the bubble (x or hover). A waiting ask is acknowledged, so it won't pop back up.
+    /// The user closed the bubble (x or hover). A waiting session is acknowledged, so it won't pop back up.
     func close() {
-        if mood == .ask || mood == .wait, let k = firstPending?.key { muted.insert(k) }
+        if let k = bubble?.session, !k.isEmpty { muted.insert(k) }
         dismiss()
     }
 
-    /// Hovering a bubble hides it after a short dwell. Permission asks are exempt: you need to click them.
+    /// Hovering a bubble hides it after a short dwell. Asks and stop failures are exempt: you need to click them.
     func hovering(_ inside: Bool) {
         hoverTask?.cancel(); hoverTask = nil
-        guard inside, bubble != nil, mood != .ask else { return }
+        guard inside, let b = bubble, b.session.isEmpty || mood == .wait else { return }
         let w = DispatchWorkItem { self.close() }
         hoverTask = w
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: w)
@@ -170,19 +177,27 @@ struct Look {
 
     /// Bubble tap: a waiting session's bubble jumps to its terminal, anything else just closes.
     func bubbleTapped() {
-        guard mood == .ask || mood == .wait, let p = firstPending?.value else { return dismiss() }
-        let ids = ["iTerm.app": "com.googlecode.iterm2", "Apple_Terminal": "com.apple.Terminal", "vscode": "com.microsoft.VSCode",
-                   "WarpTerminal": "dev.warp.Warp", "ghostty": "com.mitchellh.ghostty", "Hyper": "co.zeit.hyper"]
-        // ponytail: app-level focus only; per-tab focus needs AppleScript per terminal
-        if let id = ids[p.term] { NSRunningApplication.runningApplications(withBundleIdentifier: id).first?.activate() }
+        guard let b = bubble, let p = pending[b.session] else { return dismiss() }
+        // ponytail: app-level focus only (term is the terminal's bundle id); per-tab focus needs AppleScript per terminal
+        NSRunningApplication.runningApplications(withBundleIdentifier: p.term).first?.activate()
+    }
+
+    /// A session is waiting on the user. tick() keeps re-showing it until that session moves on; a fresh call un-mutes a closed one.
+    func pend(_ sid: String, _ m: Mood, _ b: Bubble, _ term: String, sound: String? = nil) {
+        var b = b
+        b.session = sid
+        pending[sid] = (m, b, Date(), term)
+        muted.remove(sid)
+        if let s = sound { chirp(s) }
+        say(m, b, for: nil)
     }
 
     func handle(_ e: [String: Any]) {
-        let now = Date(), sid = str(e["session"]), project = fileName(e["cwd"]), event = str(e["event"])
+        let now = Date(), sid = str(e["session"]), project = fileName(e["cwd"]), event = str(e["event"]), term = str(e["term"])
         lastEvent = now
         look.eventAt = now
         sessions[sid]?.seen = now
-        if event != "Notification" { pending[sid] = nil; muted.remove(sid) }  // the session moved on, so the user answered
+        if event != "Notification" { pending[sid] = nil; muted.remove(sid); askDetail[sid] = nil }  // the session moved on, so the user answered
         switch event {
         case "UserPromptSubmit":
             sessions[sid] = (now, 0, now)
@@ -198,21 +213,34 @@ struct Look {
             var b = describe(tool: tool, e["input"] as? [String: Any] ?? [:])
             b.project = project
             say(moodFor(tool: tool), b, for: 10)
-        case "PostToolUse", "PostToolUseFailure":
+        case "PostToolUseFailure":
             let err = str(e["error"])
             guard !err.isEmpty else { return }
             look.effort = min(1, look.effort + 0.25)  // failures wear the cat down
             say(.oops, Bubble(icon: "exclamationmark.triangle.fill", title: "Oops", detail: "\(str(e["tool"])) didn't go well",
                               code: firstLine(err), project: project), for: 8)
+        case "PermissionRequest":  // fires just before the permission dialog; the Notification that follows is the cue to show it
+            var b = describe(tool: str(e["tool"]), e["input"] as? [String: Any] ?? [:])
+            b.icon = "hand.raised.fill"; b.title = "Needs you · " + b.title; b.project = project
+            askDetail[sid] = b
         case "Notification":
-            let msg = str(e["message"])
-            let idle = str(e["kind"]) == "idle_prompt" || msg.lowercased().contains("waiting for your input")
-            let b = idle ? Bubble(icon: "cup.and.saucer.fill", title: "Ready when you are", detail: "", project: project)
-                         : Bubble(icon: "hand.raised.fill", title: "Needs you", detail: msg, project: project)
-            pending[sid] = (idle ? .wait : .ask, b, now, str(e["term"]))
-            muted.remove(sid)
-            if !idle { chirp("Pop") }
-            say(idle ? .wait : .ask, b, for: nil)
+            let msg = str(e["message"]), kind = str(e["kind"])
+            if kind == "idle_prompt" || msg.lowercased().contains("waiting for your input") {
+                if pending[sid]?.mood == .oops { return }  // a stopped session is still stopped; "ready" would hide the error
+                pend(sid, .wait, Bubble(icon: "cup.and.saucer.fill", title: "Ready when you are", project: project), term)
+            } else if ["permission_prompt", "elicitation_dialog", "elicitation_url_dialog", "agent_needs_input"].contains(kind) {
+                let b = (kind == "permission_prompt" ? askDetail.removeValue(forKey: sid) : nil)
+                    ?? Bubble(icon: "hand.raised.fill", title: "Needs you", detail: msg, project: project)
+                pend(sid, .ask, b, term, sound: "Pop")
+            } else {  // auth_success, agent_completed, elicitation results, quota auto-resume: news, not a request
+                say(.idle, Bubble(icon: "info.circle", title: "Heads up", detail: msg, project: project), for: 6)
+            }
+        case "StopFailure":  // API error (rate limit, overloaded, billing…): the session is dead until you act, so it nags like an ask
+            sessions[sid] = nil
+            look.effort = 0
+            pend(sid, .oops, Bubble(icon: "exclamationmark.triangle.fill", title: "Claude stopped",
+                                    detail: str(e["kind"]).replacingOccurrences(of: "_", with: " "), code: firstLine(str(e["error"])), project: project),
+                 term, sound: "Basso")
         case "Stop":
             var title = "All done!"
             if let s = sessions.removeValue(forKey: sid) {
@@ -220,7 +248,7 @@ struct Look {
                 if s.steps > 0 { title += " · \(s.steps) step\(s.steps == 1 ? "" : "s")" }
             }
             look.effort = 0
-            let summary = str(e["summary"]).replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "\n", with: " ")
+            let summary = plain(str(e["summary"]))
             chirp("Glass")
             say(.done, Bubble(icon: "checkmark.circle.fill", title: title, detail: summary, project: project), for: 30)
         case "SessionEnd":
@@ -247,13 +275,13 @@ struct Look {
     func tick(live: Bool = true) {
         if live { poll() }
         let now = Date()
-        // ponytail: a closed session never sends another event, so idle pleas expire; permission asks never do
-        pending = pending.filter { $0.value.mood == .ask || now.timeIntervalSince($0.value.since) < 600 }
+        // ponytail: a closed session never sends another event, so idle pleas expire; asks and stop failures never do
+        pending = pending.filter { $0.value.mood != .wait || now.timeIntervalSince($0.value.since) < 600 }
         muted = muted.filter { pending[$0] != nil }
-        let hasAsk = pending.values.contains { $0.mood == .ask }
+        let needsYou = pending.values.contains { $0.mood != .wait }
         if quiet {
             if bubble != nil || menu { bubble = nil; menu = false }
-            if look.badge != hasAsk { look.badge = hasAsk }
+            if look.badge != needsYou { look.badge = needsYou }
             if mood != .quiet { mood = .quiet }
             return
         }
@@ -263,7 +291,7 @@ struct Look {
         if let p = firstPending?.value {
             var want = p.bubble
             let wait = now.timeIntervalSince(p.since)
-            if p.mood == .ask, wait >= 60 { want.detail = "Waiting \(durations.string(from: wait) ?? "")… " + want.detail }
+            if p.mood != .wait, wait >= 60 { want.detail = "Waiting \(durations.string(from: wait) ?? "")… " + want.detail }
             if bubble == nil || (mood == p.mood && bubble != want) { bubble = want; mood = p.mood; hideAt = .distantFuture }
         }
         if bubble == nil {
@@ -467,7 +495,7 @@ struct BubbleView: View {
                         Image(systemName: "xmark").font(.system(size: 10, weight: .bold)).foregroundStyle(.primary.opacity(0.65))
                             .frame(width: 20, height: 20).background(Color.primary.opacity(0.09), in: Circle())
                     }
-                    .buttonStyle(.plain).help("Close")
+                    .buttonStyle(.plain).help("Close").accessibilityLabel("Close")
                 }
                 .font(.system(size: 14))
                 if !b.detail.isEmpty {
@@ -480,6 +508,7 @@ struct BubbleView: View {
                 }
             }
         }
+        .accessibilityElement(children: .combine)  // VoiceOver reads the whole bubble as one line
     }
 }
 
@@ -532,6 +561,7 @@ struct Root: View {
             .scaleEffect(m.quiet ? 0.4 : 1, anchor: .bottomTrailing)  // minimised: icon-sized, full 96pt hit area stays
             .opacity(m.quiet ? 0.85 : 1)
             .contentShape(Rectangle())
+            .accessibilityLabel("VibeCat: " + String(describing: m.mood)).accessibilityAddTraits(.isButton)  // sound is the only other non-visual cue
             .onTapGesture { m.catTapped() }
             .gesture(DragGesture(minimumDistance: 3).onChanged { _ in
                 guard let w = m.window else { return }
@@ -579,7 +609,7 @@ final class Host: NSHostingView<Root> {
     precondition(m.mood == .read)
     m.handle(["event": "PreToolUse", "session": "s", "cwd": "/x/proj", "tool": "Edit", "input": ["file_path": "/f.txt"]])
     precondition(m.mood == .edit)
-    m.handle(["event": "PostToolUse", "session": "s", "cwd": "/x/proj", "tool": "Edit"])  // no error: nothing changes
+    m.handle(["event": "PostToolUse", "session": "s", "cwd": "/x/proj", "tool": "Edit"])  // an event we don't handle: nothing changes
     precondition(m.mood == .edit)
     m.handle(["event": "PostToolUseFailure", "session": "s", "cwd": "/x/proj", "tool": "Bash", "error": "exit 1\nmore"])
     check(m.bubble, "Oops|Bash didn't go well|exit 1")
@@ -587,6 +617,7 @@ final class Host: NSHostingView<Root> {
     m.handle(["event": "Stop", "session": "s", "cwd": "/x/proj", "summary": "Fixed the **bug**.\nTests pass."])
     check(m.bubble, "Done · 0s · 2 steps|Fixed the bug. Tests pass.|")
     precondition(m.mood == .done && m.bubble?.project == "proj" && m.sessions.isEmpty && m.look.effort == 0)
+    precondition(plain("## Done\n- Fixed `a`\n- Tests **pass**\n\n1. next") == "Done Fixed a Tests pass next")
     // A permission ask survives another session's chatter and clears only when its own session moves on.
     m.handle(["event": "Notification", "session": "a", "cwd": "/a", "message": "Allow Bash?", "kind": "permission_prompt"])
     m.handle(["event": "PreToolUse", "session": "b", "cwd": "/b", "tool": "Read", "input": ["file_path": "/f.txt"]])
@@ -605,6 +636,33 @@ final class Host: NSHostingView<Root> {
     precondition(m.bubble == nil && m.mood == .quiet && m.look.badge)
     m.quiet = false; m.tick(live: false)
     check(m.bubble, "Needs you|Allow Write?|")
+    // A PermissionRequest only remembers the specifics; the Notification that follows shows them.
+    let p = Model()
+    p.quiet = false
+    p.handle(["event": "PermissionRequest", "session": "p", "cwd": "/p", "tool": "Bash", "input": ["command": "rm -rf build", "description": "Clean"]])
+    precondition(p.bubble == nil && p.pending.isEmpty)
+    p.handle(["event": "Notification", "session": "p", "cwd": "/p", "message": "Claude needs your permission to use Bash", "kind": "permission_prompt"])
+    check(p.bubble, "Needs you · Running|Clean|rm -rf build")
+    precondition(p.mood == .ask && p.bubble?.session == "p" && p.askDetail.isEmpty)
+    // Other notification kinds are news, not requests: no pending, no nagging.
+    p.handle(["event": "PreToolUse", "session": "p", "cwd": "/p", "tool": "Bash", "input": ["command": "rm -rf build"]])
+    p.handle(["event": "Notification", "session": "p", "cwd": "/p", "message": "Signed in", "kind": "auth_success"])
+    check(p.bubble, "Heads up|Signed in|")
+    precondition(p.pending.isEmpty)
+    // An API failure nags like an ask, survives the idle notice that follows, needs a click rather than a hover, and clears when the user types again.
+    p.handle(["event": "StopFailure", "session": "p", "cwd": "/p", "kind": "rate_limit", "error": "429 Too many requests\ndetails"])
+    check(p.bubble, "Claude stopped|rate limit|429 Too many requests")
+    precondition(p.mood == .oops && p.pending["p"]?.mood == .oops && p.sessions.isEmpty)
+    p.handle(["event": "Notification", "session": "p", "cwd": "/p", "message": "Claude is waiting for your input", "kind": "idle_prompt"])
+    check(p.bubble, "Claude stopped|rate limit|429 Too many requests")
+    p.hovering(true)
+    precondition(p.hoverTask == nil)
+    p.hideAt = .distantPast; p.tick(live: false)
+    check(p.bubble, "Claude stopped|rate limit|429 Too many requests")
+    p.close(); p.tick(live: false)
+    precondition(p.bubble == nil && p.muted.contains("p"))
+    p.handle(["event": "UserPromptSubmit", "session": "p", "cwd": "/p", "prompt": "retry"])
+    precondition(p.pending.isEmpty && p.muted.isEmpty)
     // Closing an ask keeps it closed until that session sends a fresh notification.
     let n = Model()
     n.quiet = false; n.faceOnly = false
@@ -631,8 +689,10 @@ MainActor.assumeIsolated {
 
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)  // no dock icon
-    try? FileManager.default.createDirectory(atPath: (eventsPath as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
-    FileManager.default.createFile(atPath: eventsPath, contents: nil)  // start with a fresh log
+    // Fresh log, readable only by this user: it holds prompts and shell commands.
+    try? FileManager.default.createDirectory(atPath: (eventsPath as NSString).deletingLastPathComponent, withIntermediateDirectories: true,
+                                             attributes: [.posixPermissions: 0o700])
+    FileManager.default.createFile(atPath: eventsPath, contents: nil, attributes: [.posixPermissions: 0o600])
 
     let model = Model()
     let screen = NSScreen.main!.visibleFrame
