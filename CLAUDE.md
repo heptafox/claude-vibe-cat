@@ -11,23 +11,25 @@ VibeCat is a macOS desktop cat (single-file SwiftUI/AppKit app) that reacts to C
 ```sh
 swiftc -O vibecat.swift -o vibecat      # build
 ./vibecat --test                        # self-check; prints "ok" or traps on a failed precondition
-./vibecat                               # run (floating panel, no Dock icon)
-./install.sh                            # build + test + merge hooks into ~/.claude/settings.json (backs up to .bak)
+./vibecat                               # run by hand (floating panel, no Dock icon); normally launchd runs it, see install.sh
+./install.sh                            # build + test + merge hooks and wrap statusLine in ~/.claude/settings.json (backs up to .bak) + (re)start the cat via launchd
 ```
 
 - The self-test is the only test suite and it is one function (`selfTest()`); there is no per-test runner. Add cases there.
 - Debug builds (`-Onone`) report the failing line and message from a `precondition`; `-O` builds just trap with exit 133.
 - Set `VIBECAT_EVENTS=/some/file.jsonl` to run a second instance against a scratch log without touching the real one. Note that `./vibecat` truncates its events file on launch.
-- Drive the app by hand by appending JSON lines to `~/.vibecat/events.jsonl` (see the event shape below), then screenshot. Restart the process with `pkill -x vibecat` after rebuilding.
+- Drive the app by hand by appending JSON lines to `~/.vibecat/events.jsonl` (see the event shape below), then screenshot. After rebuilding, `./install.sh` or `pkill -x vibecat` restarts it: launchd relaunches the cat on any non-zero exit (`KeepAlive.SuccessfulExit false`), so a kill is a restart and a menu Quit (exit 0) sticks.
 
 ## Architecture
 
-Two pieces connected by a log file:
+Two pieces connected by a log file, plus a usage snapshot:
 
 1. **`hook.sh`** is registered as the Claude Code hook for eight events (PreToolUse, PostToolUseFailure, PermissionRequest, Notification, UserPromptSubmit, Stop, StopFailure, SessionEnd). It is a single `jq` pass that reads the hook JSON on stdin and appends one trimmed line to `~/.vibecat/events.jsonl` (mode 600). It strips large fields and caps strings at 300 chars. It must never exit non-zero (exit 2 would block Claude's tool call), hence the `|| true` and early `exit 0`.
 2. **`vibecat.swift`** polls that file every 0.25s from `Model.tick()`, parses new complete lines, and turns them into a `Mood` plus a `Bubble`.
 
 Event line fields: `event, session, cwd, tool, message, prompt, kind` (notification type, or error type on StopFailure), `summary` (Stop only, from `last_assistant_message`), `term` (the terminal app's bundle id, from `$__CFBundleIdentifier`), `error`, `input`. The field names are a contract between `hook.sh` and `Model.handle()`; change both together.
+
+3. **`statusline.sh`** is installed as the Claude Code `statusLine`, the only place plan usage is exposed. It rewrites `~/.vibecat/usage.json` as `{five_hour, seven_day, chats}`. `five_hour` and `seven_day` come from `rate_limits`, each with `used_percentage` and `resets_at` in epoch seconds; they are Pro/Max only, and the last known values are kept when they're absent. `chats` maps each `session_id` to `{cwd, pct, tokens, size, at}`, merged with the previous file and pruned after a day. `tokens` is what's in the context window now; Claude Code exposes no cumulative per-session total. The file is written atomically. It then pipes the same stdin to the user's previous status line, whose command `install.sh` saved in `~/.vibecat/statusline-next`. `Model.readUsage()` stats the file each tick. `noteUsage()` fills `usage` and `chats`, and nudges once per limit window at 80% and 95%, tracked in `warned`. Context never nudges; it shows only in the menu. `MenuView` shows `usage`, then `recentChats`: the last hour, newest two, minus sessions in `ended` (filled from SessionEnd). The panel is 260pt tall so the menu fits all four meters.
 
 ### Inside vibecat.swift
 
@@ -44,6 +46,7 @@ Event line fields: `event, session, cwd, tool, message, prompt, kind` (notificat
 
 - `install.sh` removes earlier vibecat entries from `~/.claude/settings.json` and appends its own, leaving other hooks alone. Re-run it after pulling, since the event list changes between versions.
 - Hook changes only apply to Claude Code sessions started after install.
+- `install.sh` writes `~/Library/LaunchAgents/com.heptafox.vibecat.plist` pointing at this checkout's binary and bootstraps it. Moving the checkout means re-running it. The agent runs the binary with no env, so `VIBECAT_EVENTS` test instances are always started by hand.
 - The `vibecat` binary is a build artifact (gitignored). Build it per machine.
 - Requires macOS 14+ (uses `.spring(duration:bounce:)` and Swift switch expressions).
 - Shortcuts with known ceilings are marked with `ponytail:` comments (e.g. app-level terminal focus only, effort is a steps-and-time heuristic, naive log rotation can lose an event). Grep for them before "fixing" something that is deliberate.

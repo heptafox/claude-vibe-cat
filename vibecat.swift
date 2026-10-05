@@ -1,12 +1,13 @@
 // VibeCat: a tiny desktop cat that tells you what Claude Code is doing.
 // Build: swiftc -O vibecat.swift -o vibecat    Run: ./vibecat    Self-check: ./vibecat --test
-// Reads events that hook.sh appends to ~/.vibecat/events.jsonl.
-// Click the cat for its menu (last message, minimise, face-only, mute, quit). Minimised, it sits quietly; click to wake.
+// Reads events that hook.sh appends to ~/.vibecat/events.jsonl, and plan usage that statusline.sh saves to ~/.vibecat/usage.json.
+// Click the cat for its menu (usage meters, last message, minimise, face-only, mute, quit). Minimised, it sits quietly; click to wake.
 // Bubbles close with their x, or by hovering them. Click a "Needs you" bubble to jump to that terminal. Drag the cat to move it.
 import Cocoa
 import SwiftUI
 
 let eventsPath = ProcessInfo.processInfo.environment["VIBECAT_EVENTS"] ?? NSHomeDirectory() + "/.vibecat/events.jsonl"  // override for testing
+let usagePath = (eventsPath as NSString).deletingLastPathComponent + "/usage.json"  // next to the events, so a test instance stays isolated
 let defaults = UserDefaults.standard
 
 // MARK: - Turning hook events into words
@@ -63,13 +64,19 @@ func moodFor(tool: String) -> Mood {
 
 let durations: DateComponentsFormatter = {
     let f = DateComponentsFormatter()
-    f.allowedUnits = [.hour, .minute, .second]
+    f.allowedUnits = [.day, .hour, .minute, .second]  // days only ever show for the weekly limit
     f.unitsStyle = .abbreviated
     f.maximumUnitCount = 2
     return f
 }()
 
 // MARK: - State
+
+/// One plan limit window from the status line's `rate_limits`.
+struct Limit: Equatable { var pct: Double, resets: Date }
+let limitNames = [("five_hour", "Session"), ("seven_day", "Week")]
+/// One chat's context window, from the status line. `tokens` is what's in the context now, not a running total.
+struct Chat: Hashable { var project: String, pct: Double, tokens: Int, size: Int, at: Date }
 
 typealias Pend = (mood: Mood, bubble: Bubble, since: Date, term: String)
 
@@ -122,6 +129,15 @@ struct Look {
     var lastEvent = Date()
     var sessions: [String: (start: Date, steps: Int, seen: Date)] = [:]
     var offset: UInt64 = 0
+    @Published var usage: [String: Limit] = [:]  // five_hour / seven_day; empty for API-key users
+    var warned: [String: Int] = [:]               // "<window><resets_at>" -> highest threshold already nudged, so a new window starts over
+    @Published var chats: [String: Chat] = [:]    // session -> context window
+    var ended: Set<String> = []                   // SessionEnd seen; usage.json keeps them for a day
+    /// The menu's context rows: the two most recent live chats from the last hour.
+    var recentChats: [Chat] {
+        Array(chats.filter { !ended.contains($0.key) && $0.value.at.timeIntervalSinceNow > -3600 }.values.sorted { $0.at > $1.at }.prefix(2))
+    }
+    var usageStamp = Date.distantPast             // usage.json mtime last read
     weak var window: NSWindow?
 
     /// `secs == nil` keeps the bubble up until the next event or a click.
@@ -253,8 +269,49 @@ struct Look {
             say(.done, Bubble(icon: "checkmark.circle.fill", title: title, detail: summary, project: project), for: 30)
         case "SessionEnd":
             sessions[sid] = nil
+            ended.insert(sid)
         default: break
         }
+    }
+
+    /// A status line snapshot: `{five_hour: {used_percentage, resets_at}, seven_day: {...}, chats: {...}}`.
+    /// Nudges once at 80% and once at 95% per limit window; context never nudges, the terminal already does.
+    func noteUsage(_ j: [String: Any], now: Date = Date()) {
+        var u: [String: Limit] = [:], nudge: [String] = [], resetsIn = ""
+        for (key, name) in limitNames {
+            guard let w = j[key] as? [String: Any], let pct = (w["used_percentage"] as? NSNumber)?.doubleValue,
+                  let at = (w["resets_at"] as? NSNumber)?.doubleValue, at > now.timeIntervalSince1970 else { continue }  // expired: stale
+            u[key] = Limit(pct: pct, resets: Date(timeIntervalSince1970: at))
+            let tag = key + String(Int(at)), hit = [95, 80].first { pct >= Double($0) } ?? 0
+            if hit > warned[tag, default: 0] {
+                warned[tag] = hit
+                nudge.append("\(name) \(Int(pct))%")
+                if resetsIn.isEmpty { resetsIn = "Resets in " + (durations.string(from: at - now.timeIntervalSince1970) ?? "") }
+            }
+        }
+        if !nudge.isEmpty {  // both at once (typically at launch) share one bubble; a working cat keeps its face
+            say([.think, .read, .edit, .work].contains(mood) ? mood : .idle,
+                Bubble(icon: "gauge.with.dots.needle.67percent", title: nudge.joined(separator: " · ") + " used", detail: resetsIn), for: 10)
+        }
+        if u != usage { usage = u }
+        var c: [String: Chat] = [:]
+        for (sid, v) in j["chats"] as? [String: [String: Any]] ?? [:] {
+            guard let pct = (v["pct"] as? NSNumber)?.doubleValue, let at = (v["at"] as? NSNumber)?.doubleValue else { continue }
+            c[sid] = Chat(project: fileName(v["cwd"]), pct: pct, tokens: (v["tokens"] as? NSNumber)?.intValue ?? 0,
+                          size: (v["size"] as? NSNumber)?.intValue ?? 0, at: Date(timeIntervalSince1970: at))
+        }
+        if c != chats { chats = c }
+    }
+
+    func readUsage() {
+        guard let at = (try? FileManager.default.attributesOfItem(atPath: usagePath))?[.modificationDate] as? Date, at != usageStamp,
+              let d = FileManager.default.contents(atPath: usagePath) else {
+            let live = usage.filter { $0.value.resets > Date() }  // a window passed with no fresh snapshot yet
+            if live != usage { usage = live }
+            return
+        }
+        usageStamp = at
+        noteUsage((try? JSONSerialization.jsonObject(with: d)) as? [String: Any] ?? [:])
     }
 
     func poll() {
@@ -273,7 +330,7 @@ struct Look {
     }
 
     func tick(live: Bool = true) {
-        if live { poll() }
+        if live { poll(); readUsage() }  // readUsage is one stat unless the status line wrote a new snapshot
         let now = Date()
         // ponytail: a closed session never sends another event, so idle pleas expire; asks and stop failures never do
         pending = pending.filter { $0.value.mood != .wait || now.timeIntervalSince($0.value.since) < 600 }
@@ -516,17 +573,51 @@ struct MenuView: View {  // what you get when you click the cat
     @ObservedObject var m: Model
     var body: some View {
         Card(tint: .orange) {
-            HStack(spacing: 4) {
-                item("bubble.left.fill", "Last") { m.recall() }
-                item("moon.zzz.fill", "Minimise") { m.setQuiet(true) }
-                item(m.faceOnly ? "text.bubble.fill" : "face.smiling.fill", m.faceOnly ? "Show text" : "Face only") { m.toggleFaceOnly() }
-                item(defaults.bool(forKey: "mute") ? "speaker.slash.fill" : "speaker.wave.2.fill",
-                     defaults.bool(forKey: "mute") ? "Unmute" : "Mute") {
-                    defaults.set(!defaults.bool(forKey: "mute"), forKey: "mute"); m.objectWillChange.send()
+            VStack(alignment: .leading, spacing: 6) {
+                let limits = limitNames.compactMap { key, name in m.usage[key].map { (name, $0) } }, chats = m.recentChats
+                if !limits.isEmpty {
+                    caption("Plan usage")
+                    ForEach(limits, id: \.0) { name, l in meter(name, l.pct, when(l.resets)) }
                 }
-                item("xmark.circle.fill", "Quit") { NSApp.terminate(nil) }
+                if !chats.isEmpty {
+                    caption("Context")
+                    ForEach(chats, id: \.self) { c in meter(c.project, c.pct, tokens(c.tokens) + " / " + tokens(c.size)) }
+                }
+                HStack(spacing: 4) {
+                    item("bubble.left.fill", "Last") { m.recall() }
+                    item("moon.zzz.fill", "Minimise") { m.setQuiet(true) }
+                    item(m.faceOnly ? "text.bubble.fill" : "face.smiling.fill", m.faceOnly ? "Show text" : "Face only") { m.toggleFaceOnly() }
+                    item(defaults.bool(forKey: "mute") ? "speaker.slash.fill" : "speaker.wave.2.fill",
+                         defaults.bool(forKey: "mute") ? "Unmute" : "Mute") {
+                        defaults.set(!defaults.bool(forKey: "mute"), forKey: "mute"); m.objectWillChange.send()
+                    }
+                    item("xmark.circle.fill", "Quit") { NSApp.terminate(nil) }
+                }
             }
         }
+    }
+    func tokens(_ n: Int) -> String { n.formatted(.number.notation(.compactName).locale(Locale(identifier: "en_US"))) }  // 124K, 1M: tokens are counted in K/M everywhere
+    func caption(_ s: String) -> some View {
+        Text(s.uppercased()).font(.system(size: 9, weight: .bold)).tracking(0.6).foregroundStyle(.secondary)
+    }
+    /// A limit's reset: "↻ 3:10 PM" if within a day, else "↻ Thu 3:10 PM".
+    func when(_ d: Date) -> String {
+        "↻ " + (d.timeIntervalSinceNow < 86400 ? "" : d.formatted(.dateTime.weekday()) + " ") + d.formatted(date: .omitted, time: .shortened)
+    }
+    /// "Session [bar] 78%  ↻ 3:10 PM" or "vibe-cat [bar] 62%  124K / 200K".
+    func meter(_ name: String, _ pct: Double, _ note: String) -> some View {
+        HStack(spacing: 6) {
+            Text(name).fontWeight(.semibold).truncationMode(.middle).frame(width: 64, alignment: .leading)
+            Capsule().fill(Color.primary.opacity(0.1)).frame(height: 6).overlay(alignment: .leading) {
+                GeometryReader { g in
+                    Capsule().fill(pct >= 80 ? Color.red : pct >= 50 ? .orange : .green).frame(width: g.size.width * min(pct, 100) / 100)
+                }
+            }
+            Text("\(Int(pct))%").monospacedDigit().frame(width: 34, alignment: .trailing)
+            Text(note).monospacedDigit().foregroundStyle(.secondary).frame(width: 78, alignment: .trailing)
+        }
+        .font(.system(size: 11)).lineLimit(1)
+        .accessibilityElement(children: .combine)
     }
     func item(_ icon: String, _ label: String, _ act: @escaping () -> Void) -> some View {
         Button(action: act) {
@@ -545,6 +636,7 @@ struct Root: View {
         HStack(alignment: .bottom, spacing: 2) {
             if m.menu {
                 MenuView(m: m).padding(.bottom, 44)
+                    .onHover { if m.menu { m.hideAt = $0 ? .distantFuture : Date().addingTimeInterval(3) } }  // stays open while you read it; the guard keeps a closing menu from cutting short the bubble "Last" just showed
                     .transition(.scale(scale: 0.5, anchor: .bottomTrailing).combined(with: .opacity))
             } else if let b = m.bubble, m.showsText {
                 BubbleView(b: b, tint: m.mood.tint, close: m.close)
@@ -581,7 +673,7 @@ struct Root: View {
             }
         }
         .padding(14)
-        .frame(width: 440, height: 190, alignment: .bottomTrailing)
+        .frame(width: 440, height: 260, alignment: .bottomTrailing)  // tall enough for the menu with all four meters
     }
 }
 
@@ -680,6 +772,42 @@ final class Host: NSHostingView<Root> {
     precondition(n.showsText)
     n.dismiss()
     precondition(!n.showsText)
+    // Usage: one nudge at 80% and one at 95% per window; a new window starts over; expired windows are dropped.
+    let u = Model()
+    u.quiet = false; u.faceOnly = false
+    let t0 = Date(timeIntervalSince1970: 1_000_000)
+    func snap(_ pct: Double, _ resets: Double) -> [String: Any] {
+        ["five_hour": ["used_percentage": pct, "resets_at": resets], "seven_day": ["used_percentage": 40, "resets_at": 1_000_000 + 86400 * 3]]
+    }
+    u.noteUsage(snap(50, 1_003_600), now: t0)
+    precondition(u.bubble == nil && u.usage["five_hour"]?.pct == 50 && u.usage["seven_day"]?.pct == 40)
+    u.noteUsage(snap(82, 1_003_600), now: t0)
+    check(u.bubble, "Session 82% used|Resets in 1h|")
+    u.dismiss()
+    u.noteUsage(snap(85, 1_003_600), now: t0)
+    precondition(u.bubble == nil)
+    u.noteUsage(snap(96, 1_003_600), now: t0)
+    check(u.bubble, "Session 96% used|Resets in 1h|")
+    u.dismiss()
+    u.noteUsage(snap(81, 1_021_600), now: t0)
+    check(u.bubble, "Session 81% used|Resets in 6h|")
+    u.noteUsage(snap(81, 999_000), now: t0)
+    precondition(u.usage["five_hour"] == nil && u.usage["seven_day"] != nil)
+    // Both limits crossing in one snapshot share a bubble; the weekly reset is in days; a working cat keeps its face.
+    u.mood = .work
+    u.noteUsage(["five_hour": ["used_percentage": 96, "resets_at": 1_050_000], "seven_day": ["used_percentage": 85, "resets_at": 1_000_000 + 86400 * 3]], now: t0)
+    check(u.bubble, "Session 96% · Week 85% used|Resets in 13h 53m|")
+    precondition(u.mood == .work)
+    u.noteUsage(["seven_day": ["used_percentage": 96, "resets_at": 1_000_000 + 86400 * 3]], now: t0)
+    check(u.bubble, "Week 96% used|Resets in 3d|")
+    // Context rows: newest chats first, at most two, none older than an hour or ended.
+    let t = Date().timeIntervalSince1970
+    u.noteUsage(["chats": ["a": ["cwd": "/x/alpha", "pct": 62, "tokens": 124_000, "size": 200_000, "at": t - 60],
+                           "b": ["cwd": "/x/beta", "pct": 10, "tokens": 20_000, "size": 200_000, "at": t - 10],
+                           "c": ["cwd": "/x/gamma", "pct": 90, "tokens": 900_000, "size": 1_000_000, "at": t - 5000],
+                           "d": ["cwd": "/x/delta", "pct": 5, "tokens": 1, "size": 1, "at": t]]])
+    u.handle(["event": "SessionEnd", "session": "d", "cwd": "/x/delta"])
+    precondition(u.recentChats.map(\.project) == ["beta", "alpha"] && u.recentChats[1].tokens == 124_000)
     print("ok")
 }
 
@@ -701,7 +829,7 @@ MainActor.assumeIsolated {
         origin = NSPointFromString(s)  // where you left it, if that monitor is still here
     }
     // Non-activating panel: clicking the cat never steals focus from what you're doing.
-    let panel = NSPanel(contentRect: NSRect(origin: origin, size: CGSize(width: 440, height: 190)),
+    let panel = NSPanel(contentRect: NSRect(origin: origin, size: CGSize(width: 440, height: 260)),
                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     panel.backgroundColor = .clear
     panel.isOpaque = false
