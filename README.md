@@ -20,9 +20,10 @@ Free and open source under the MIT license. One Swift file, no dependencies, and
 ## What it does
 
 - **Reacts to the task.** Curious while reading files, focused while editing, busy while running commands, and thoughtful while thinking. The longer a task grinds on, the more it sweats.
-- **Says what's happening.** A speech bubble shows the current step. When Claude finishes, it shows what Claude concluded.
+- **Says what's happening.** A speech bubble shows the current step. When Claude finishes, it shows what Claude concluded, with the time it took, the number of steps, and the lines added and removed.
 - **Gets your attention.** A permission request makes the cat bounce and chirp, shows what Claude wants to run, and keeps nagging until you answer. Click the bubble to jump to your terminal.
-- **Reports failures.** A failed tool call gives it an "oops" face with the error. If Claude itself stops on an API error, such as a rate limit or a billing problem, the cat says so and keeps saying so until you go back.
+- **Reports failures.** A failed tool call gives it an "oops" face with the error, and so does a tool call that auto mode refused. If Claude itself stops on an API error, such as a rate limit or a billing problem, the cat says so and keeps saying so until you go back. When the session resumes by itself after a rate limit, the cat says that too, and nags again if the resume fails.
+- **Knows about helpers.** Tool calls made by subagents show as "Helper" and don't count toward the step count. When a background agent finishes, the cat waits for you to come back.
 - **Watches your plan limits.** On Pro and Max, the menu shows how much of your 5-hour session and weekly limit you've used, and when each resets. The cat gives you one heads-up when either crosses 80%, and another at 95%.
 - **Shows how full each chat is.** The menu also shows the context window for your two most recent chats: how full it is, and the tokens in it (`124K / 200K`). Only the menu shows this; it never pops up.
 - **Handles several sessions.** One session's chatter never hides another session's request.
@@ -47,7 +48,7 @@ cd claude-vibe-cat
 
 Then restart any open Claude Code sessions, because hooks load at session start. The cat starts at login from then on, and comes back by itself if it ever crashes, through a launchd agent (`~/Library/LaunchAgents/com.heptafox.vibecat.plist`). **Quit** in the menu stops it until your next login; run `./install.sh` again to start it sooner. There is nothing to run by hand.
 
-`install.sh` backs up your settings to `~/.claude/settings.json.bak` and adds its hook next to any you already have, on eight events: PreToolUse, PostToolUseFailure, PermissionRequest, Notification, UserPromptSubmit, Stop, StopFailure and SessionEnd. Re-run it after pulling a new version, since that list can change. The hooks point at this folder's `hook.sh`, so keep the folder where it is, or re-run the installer after moving it.
+`install.sh` backs up your settings to `~/.claude/settings.json.bak` and adds its hook next to any you already have, on nine events: PreToolUse, PostToolUseFailure, PermissionRequest, PermissionDenied, Notification, UserPromptSubmit, Stop, StopFailure and SessionEnd. Re-run it after pulling a new version, since that list can change. The hooks point at this folder's `hook.sh`, so keep the folder where it is, or re-run the installer after moving it.
 
 Claude Code only shares plan usage with its status line, and you can have only one status line, so the installer sets it to `statusline.sh`. If you already had one, its command is saved to `~/.vibecat/statusline-next`. `statusline.sh` runs it on every update with the same input, so your status bar looks the same as before.
 
@@ -56,7 +57,7 @@ Claude Code only shares plan usage with its status line, and you can have only o
 Click the cat to open its menu. The top of the menu has up to two sections:
 
 - **Plan usage** (Pro and Max only): your **Session** (5-hour) and **Week** limits, and when each resets.
-- **Context**: one row per chat active in the last hour, newest first, two at most. Each row shows the project, how full that chat's context window is, and the tokens in it out of the window size. This counts what's in the context now, not the total spent. It drops after `/compact`, and the row goes away when the chat ends.
+- **Context**: one row per chat active in the last hour, newest first, two at most. Each row shows the chat's name (from `/rename` or Claude's own title, else the project folder), how full that chat's context window is, and the tokens in it out of the window size. Hover a row for the project folder and the model. On API billing, where there are no plan limits, the row shows the session's estimated cost instead of the tokens. This counts what's in the context now, not the total spent. It drops after `/compact`, and the row goes away when the chat ends.
 
 Bars turn orange at 50% and red at 80%. ↻ marks when a limit resets. The meters appear after the first Claude reply in a session started after you installed. The menu stays open while your pointer is over it.
 
@@ -72,7 +73,7 @@ Drag the cat to move it. It remembers its position. Right-clicking it offers the
 
 ## Privacy
 
-`hook.sh` writes a trimmed copy of each Claude Code event to `~/.vibecat/events.jsonl`. It drops file contents and edit text and cuts long strings to 300 characters. It keeps prompts, shell commands and file names so the bubble can show them. The log is plain text, readable only by your user account. `statusline.sh` saves only the usage percentages, reset times, and each chat's folder and context size to `~/.vibecat/usage.json`. A chat's entry is dropped a day after its last update. VibeCat makes no network requests. Settings live in the `vibecat` preferences domain.
+`hook.sh` writes a trimmed copy of each Claude Code event to `~/.vibecat/events.jsonl`. It drops file contents and edit text and cuts long strings to 300 characters. It keeps prompts, shell commands and file names so the bubble can show them. The log is plain text, readable only by your user account. `statusline.sh` saves only the usage percentages, reset times, and each chat's folder, name, model, context size, lines changed and estimated cost to `~/.vibecat/usage.json`. A chat's entry is dropped a day after its last update. VibeCat makes no network requests. Settings live in the `vibecat` preferences domain.
 
 ## How it works
 

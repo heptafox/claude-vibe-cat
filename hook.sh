@@ -8,7 +8,7 @@ mkdir -p ~/.vibecat
 # term: the terminal app's bundle id, inherited from whatever launched the shell; vibecat focuses it on click
 jq -c --arg term "${__CFBundleIdentifier:-}" \
   '{event: .hook_event_name, session: .session_id, cwd, tool: .tool_name, message, prompt,
-    kind: (.notification_type // .error_type), summary: (.last_assistant_message // ""), term: $term,
-    error: (.error // .error_message),
+    kind: (.notification_type // .error_type), summary: (.last_assistant_message // ""), term: $term, agent: .agent_type,
+    error: (.error // .error_message // .reason),
     input: (.tool_input // {} | del(.content, .old_string, .new_string, .edits, .new_source))}
    | walk(if type == "string" then .[0:300] else . end)' >> ~/.vibecat/events.jsonl 2>/dev/null || true

@@ -75,8 +75,12 @@ let durations: DateComponentsFormatter = {
 /// One plan limit window from the status line's `rate_limits`.
 struct Limit: Equatable { var pct: Double, resets: Date }
 let limitNames = [("five_hour", "Session"), ("seven_day", "Week")]
-/// One chat's context window, from the status line. `tokens` is what's in the context now, not a running total.
-struct Chat: Hashable { var project: String, pct: Double, tokens: Int, size: Int, at: Date }
+/// One chat, from the status line. `tokens` is what's in the context now, not a running total. `name` and `model` may be empty;
+/// `usd` is Claude Code's list-price estimate, only meaningful on API billing.
+struct Chat: Hashable {
+    var project: String, pct: Double, tokens: Int, size: Int, at: Date
+    var name = "", model = "", added = 0, removed = 0, usd = 0.0
+}
 
 typealias Pend = (mood: Mood, bubble: Bubble, since: Date, term: String)
 
@@ -210,6 +214,7 @@ struct Look {
 
     func handle(_ e: [String: Any]) {
         let now = Date(), sid = str(e["session"]), project = fileName(e["cwd"]), event = str(e["event"]), term = str(e["term"])
+        let helper = str(e["agent"]).isEmpty ? "" : "Helper · "  // hooks fire inside subagents too, with agent_type set
         lastEvent = now
         look.eventAt = now
         sessions[sid]?.seen = now
@@ -221,20 +226,28 @@ struct Look {
             let prompt = str(e["prompt"]).replacingOccurrences(of: "\n", with: " ")
             say(.think, Bubble(icon: "sparkles", title: "On it…", detail: prompt, project: project), for: 10)
         case "PreToolUse":
-            sessions[sid, default: (now, 0, now)].steps += 1
-            let s = sessions[sid]!
-            // ponytail: effort = steps and wall time; no notion of what the task actually is
-            look.effort = min(1, Double(s.steps) / 30 + now.timeIntervalSince(s.start) / 600)
+            if helper.isEmpty {  // ponytail: helpers' calls still drive the mood and bubble, just not the step count
+                sessions[sid, default: (now, 0, now)].steps += 1
+                let s = sessions[sid]!
+                // ponytail: effort = steps and wall time; no notion of what the task actually is
+                look.effort = min(1, Double(s.steps) / 30 + now.timeIntervalSince(s.start) / 600)
+            }
             let tool = str(e["tool"])
             var b = describe(tool: tool, e["input"] as? [String: Any] ?? [:])
-            b.project = project
+            b.title = helper + b.title; b.project = project
             say(moodFor(tool: tool), b, for: 10)
         case "PostToolUseFailure":
             let err = str(e["error"])
             guard !err.isEmpty else { return }
             look.effort = min(1, look.effort + 0.25)  // failures wear the cat down
-            say(.oops, Bubble(icon: "exclamationmark.triangle.fill", title: "Oops", detail: "\(str(e["tool"])) didn't go well",
+            say(.oops, Bubble(icon: "exclamationmark.triangle.fill", title: helper + "Oops", detail: "\(str(e["tool"])) didn't go well",
                               code: firstLine(err), project: project), for: 8)
+        case "PermissionDenied":  // auto mode refused a tool call; Claude carries on, so this is news rather than an ask
+            var b = describe(tool: str(e["tool"]), e["input"] as? [String: Any] ?? [:])
+            b.icon = "hand.raised.slash.fill"; b.title = "Blocked · " + b.title; b.project = project
+            let why = firstLine(str(e["error"]))
+            if !why.isEmpty { b.code = why }
+            say(.oops, b, for: 8)
         case "PermissionRequest":  // fires just before the permission dialog; the Notification that follows is the cue to show it
             var b = describe(tool: str(e["tool"]), e["input"] as? [String: Any] ?? [:])
             b.icon = "hand.raised.fill"; b.title = "Needs you · " + b.title; b.project = project
@@ -248,7 +261,15 @@ struct Look {
                 let b = (kind == "permission_prompt" ? askDetail.removeValue(forKey: sid) : nil)
                     ?? Bubble(icon: "hand.raised.fill", title: "Needs you", detail: msg, project: project)
                 pend(sid, .ask, b, term, sound: "Pop")
-            } else {  // auth_success, agent_completed, elicitation results, quota auto-resume: news, not a request
+            } else if kind == "agent_completed" {  // a background agent finished: worth coming back for
+                pend(sid, .wait, Bubble(icon: "person.2.fill", title: "Helper finished", detail: msg, project: project), term, sound: "Glass")
+            } else if kind == "quota_auto_resume_fired" {  // the session resumed itself after a rate limit; drop the "stopped" nag
+                pending[sid] = nil; muted.remove(sid)
+                chirp("Glass")
+                say(.think, Bubble(icon: "arrow.clockwise", title: "Back on it", detail: msg, project: project), for: 10)
+            } else if kind.hasPrefix("quota_auto_resume_") {  // stale or disabled: still stuck
+                pend(sid, .oops, Bubble(icon: "exclamationmark.triangle.fill", title: "Didn't resume", detail: msg, project: project), term, sound: "Basso")
+            } else {  // auth_success, elicitation results: news, not a request
                 say(.idle, Bubble(icon: "info.circle", title: "Heads up", detail: msg, project: project), for: 6)
             }
         case "StopFailure":  // API error (rate limit, overloaded, billing…): the session is dead until you act, so it nags like an ask
@@ -262,6 +283,8 @@ struct Look {
             if let s = sessions.removeValue(forKey: sid) {
                 title = "Done · " + (durations.string(from: now.timeIntervalSince(s.start)) ?? "")
                 if s.steps > 0 { title += " · \(s.steps) step\(s.steps == 1 ? "" : "s")" }
+                // ponytail: the status line refreshes on its own clock, so this is its last count, which may trail this Stop by a tick
+                if let c = chats[sid], c.added + c.removed > 0 { title += " · +\(c.added) −\(c.removed)" }
             }
             look.effort = 0
             let summary = plain(str(e["summary"]))
@@ -298,7 +321,9 @@ struct Look {
         for (sid, v) in j["chats"] as? [String: [String: Any]] ?? [:] {
             guard let pct = (v["pct"] as? NSNumber)?.doubleValue, let at = (v["at"] as? NSNumber)?.doubleValue else { continue }
             c[sid] = Chat(project: fileName(v["cwd"]), pct: pct, tokens: (v["tokens"] as? NSNumber)?.intValue ?? 0,
-                          size: (v["size"] as? NSNumber)?.intValue ?? 0, at: Date(timeIntervalSince1970: at))
+                          size: (v["size"] as? NSNumber)?.intValue ?? 0, at: Date(timeIntervalSince1970: at),
+                          name: str(v["name"]), model: str(v["model"]), added: (v["added"] as? NSNumber)?.intValue ?? 0,
+                          removed: (v["removed"] as? NSNumber)?.intValue ?? 0, usd: (v["usd"] as? NSNumber)?.doubleValue ?? 0)
         }
         if c != chats { chats = c }
     }
@@ -541,12 +566,9 @@ struct BubbleView: View {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 7) {
                     Image(systemName: b.icon).foregroundStyle(tint)
-                    Text(b.title).fontWeight(.bold).lineLimit(1).layoutPriority(1)  // the title wins; the project chip shrinks first
-                    Spacer(minLength: 8)
-                    if !b.project.isEmpty {
-                        Text(b.project).font(.system(size: 11, weight: .bold)).foregroundStyle(tint).lineLimit(1)
-                            .padding(.horizontal, 8).padding(.vertical, 3)
-                            .background(tint.opacity(0.16), in: Capsule())
+                    ViewThatFits(in: .horizontal) {  // the title wins; a project chip that can't fit whole is dropped, not shrunk to "vib…"
+                        HStack(spacing: 7) { title; Spacer(minLength: 8); if !b.project.isEmpty { chip } }
+                        HStack(spacing: 7) { title; Spacer(minLength: 8) }
                     }
                     Button(action: close) {
                         Image(systemName: "xmark").font(.system(size: 10, weight: .bold)).foregroundStyle(.primary.opacity(0.65))
@@ -567,6 +589,12 @@ struct BubbleView: View {
         }
         .accessibilityElement(children: .combine)  // VoiceOver reads the whole bubble as one line
     }
+    var title: some View { Text(b.title).fontWeight(.bold).lineLimit(1) }
+    var chip: some View {
+        Text(b.project).font(.system(size: 11, weight: .bold)).foregroundStyle(tint).lineLimit(1)
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(tint.opacity(0.16), in: Capsule())
+    }
 }
 
 struct MenuView: View {  // what you get when you click the cat
@@ -581,7 +609,13 @@ struct MenuView: View {  // what you get when you click the cat
                 }
                 if !chats.isEmpty {
                     caption("Context")
-                    ForEach(chats, id: \.self) { c in meter(c.project, c.pct, tokens(c.tokens) + " / " + tokens(c.size)) }
+                    // ponytail: model and folder live in the tooltip; a third column doesn't fit. Cost replaces tokens on API billing
+                    // (no plan limits), where it's real money; plan users would only see a misleading list price.
+                    ForEach(chats, id: \.self) { c in
+                        let ctx = tokens(c.tokens) + " / " + tokens(c.size), paid = limits.isEmpty && c.usd > 0
+                        meter(c.name.isEmpty ? c.project : c.name, c.pct, paid ? String(format: "$%.2f", c.usd) : ctx)
+                            .help([c.project, c.model, paid ? ctx : ""].filter { !$0.isEmpty }.joined(separator: " · "))
+                    }
                 }
                 HStack(spacing: 4) {
                     item("bubble.left.fill", "Last") { m.recall() }
@@ -607,13 +641,13 @@ struct MenuView: View {  // what you get when you click the cat
     /// "Session [bar] 78%  ↻ 3:10 PM" or "vibe-cat [bar] 62%  124K / 200K".
     func meter(_ name: String, _ pct: Double, _ note: String) -> some View {
         HStack(spacing: 6) {
-            Text(name).fontWeight(.semibold).truncationMode(.middle).frame(width: 64, alignment: .leading)
+            Text(name).fontWeight(.semibold).truncationMode(.middle).frame(width: 80, alignment: .leading)
             Capsule().fill(Color.primary.opacity(0.1)).frame(height: 6).overlay(alignment: .leading) {
                 GeometryReader { g in
                     Capsule().fill(pct >= 80 ? Color.red : pct >= 50 ? .orange : .green).frame(width: g.size.width * min(pct, 100) / 100)
                 }
             }
-            Text("\(Int(pct))%").monospacedDigit().frame(width: 34, alignment: .trailing)
+            Text("\(Int(pct))%").monospacedDigit().frame(width: 32, alignment: .trailing)
             Text(note).monospacedDigit().foregroundStyle(.secondary).frame(width: 78, alignment: .trailing)
         }
         .font(.system(size: 11)).lineLimit(1)
@@ -763,6 +797,35 @@ final class Host: NSHostingView<Root> {
     precondition(n.bubble == nil && n.muted.contains("d"))
     n.handle(["event": "Notification", "session": "d", "cwd": "/d", "message": "Allow Y?", "kind": "permission_prompt"])
     check(n.bubble, "Needs you|Allow Y?|")
+    // A helper's tool calls show as such and don't count as steps; a denied call is news, not an ask.
+    let h = Model()
+    h.quiet = false; h.faceOnly = false
+    h.handle(["event": "UserPromptSubmit", "session": "h", "cwd": "/h", "prompt": "go"])
+    h.handle(["event": "PreToolUse", "session": "h", "cwd": "/h", "tool": "Read", "input": ["file_path": "/f.txt"], "agent": "Explore"])
+    check(h.bubble, "Helper · Reading|f.txt|")
+    precondition(h.mood == .read && h.sessions["h"]?.steps == 0)
+    h.handle(["event": "PermissionDenied", "session": "h", "cwd": "/h", "tool": "Bash", "input": ["command": "rm -rf /", "description": "Wipe"], "error": "blocked by policy\nmore"])
+    check(h.bubble, "Blocked · Running|Wipe|blocked by policy")
+    precondition(h.mood == .oops && h.pending.isEmpty)
+    // A finished background agent waits for you; a quota auto-resume clears the stopped nag; a failed resume nags instead.
+    h.handle(["event": "Notification", "session": "h", "cwd": "/h", "message": "Agent done", "kind": "agent_completed"])
+    check(h.bubble, "Helper finished|Agent done|")
+    precondition(h.pending["h"]?.mood == .wait)
+    h.handle(["event": "StopFailure", "session": "h", "cwd": "/h", "kind": "rate_limit", "error": "429"])
+    precondition(h.pending["h"]?.mood == .oops)
+    h.handle(["event": "Notification", "session": "h", "cwd": "/h", "message": "Resumed", "kind": "quota_auto_resume_fired"])
+    check(h.bubble, "Back on it|Resumed|")
+    precondition(h.mood == .think && h.pending.isEmpty)
+    h.handle(["event": "Notification", "session": "h", "cwd": "/h", "message": "Gave up", "kind": "quota_auto_resume_stale"])
+    check(h.bubble, "Didn't resume|Gave up|")
+    precondition(h.pending["h"]?.mood == .oops)
+    // Chat metadata from the status line: name and model for the menu, lines changed in the Done title.
+    h.noteUsage(["chats": ["h": ["cwd": "/x/proj", "pct": 12, "at": Date().timeIntervalSince1970, "name": "fix bug", "model": "Opus",
+                                 "added": 3, "removed": 1, "usd": 0.42]]])
+    precondition(h.chats["h"]?.name == "fix bug" && h.chats["h"]?.model == "Opus" && h.chats["h"]?.usd == 0.42)
+    h.handle(["event": "UserPromptSubmit", "session": "h", "cwd": "/h", "prompt": "go"])
+    h.handle(["event": "Stop", "session": "h", "cwd": "/h", "summary": "ok"])
+    check(h.bubble, "Done · 0s · +3 −1|ok|")
     precondition(!n.muted.contains("d"))
     // Face-only: the mood still changes, but no text is shown unless asked for with "Last".
     n.faceOnly = true
@@ -831,6 +894,7 @@ MainActor.assumeIsolated {
     // Non-activating panel: clicking the cat never steals focus from what you're doing.
     let panel = NSPanel(contentRect: NSRect(origin: origin, size: CGSize(width: 440, height: 260)),
                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.setFrame(panel.constrainFrameRect(panel.frame, to: NSScreen.screens.first { $0.frame.contains(origin) }), display: false)  // keep the whole panel on screen
     panel.backgroundColor = .clear
     panel.isOpaque = false
     panel.hasShadow = false
