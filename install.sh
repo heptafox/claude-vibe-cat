@@ -10,7 +10,7 @@ cp "$s" "$s.bak"
 # Drop earlier vibecat entries (the event list changes between versions), then add one per event.
 # The hook points at this checkout's hook.sh, so the repo can live anywhere. timeout 5: a stuck hook must never stall a tool call.
 jq --arg h "$PWD/hook.sh" '.hooks = ((.hooks // {}) | map_values(map(select(all(.hooks[]?; .command != $h)))) | with_entries(select(.value | length > 0)))
-  | reduce ("PreToolUse","PostToolUseFailure","PermissionRequest","PermissionDenied","Notification","UserPromptSubmit","Stop","StopFailure","SessionEnd") as $ev
+  | reduce ("PreToolUse","PostToolUse","PostToolUseFailure","PermissionRequest","PermissionDenied","Notification","UserPromptSubmit","Stop","StopFailure","SessionEnd","PreCompact","PostCompact") as $ev
       (.; .hooks[$ev] += [{hooks: [{type: "command", command: $h, timeout: 5}]}])' "$s" > "$s.new" && mv "$s.new" "$s"
 # Plan usage only reaches outside tools through the status line, and there is only one: wrap yours instead of replacing it.
 sl="$PWD/statusline.sh"

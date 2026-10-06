@@ -38,6 +38,10 @@ func describe(tool: String, _ i: [String: Any]) -> Bubble {
     case "WebFetch": return Bubble(icon: "globe", title: "Reading the web", detail: URL(string: str(i["url"]))?.host ?? str(i["url"]))
     case "WebSearch": return Bubble(icon: "globe", title: "Searching the web", detail: str(i["query"]))
     case "Task", "Agent": return Bubble(icon: "person.2", title: "Sending a helper", detail: str(i["description"]))
+    case "AskUserQuestion":  // the PermissionRequest + permission_prompt that follow turn this into "Needs you · Question"
+        let qs = i["questions"] as? [[String: Any]] ?? []
+        return Bubble(icon: "questionmark.bubble.fill", title: qs.count > 1 ? "\(qs.count) questions" : "Question", detail: str(qs.first?["question"]))
+    case "ExitPlanMode": return Bubble(icon: "list.bullet.clipboard", title: "Plan ready", detail: plain(str(i["plan"])))
     case "TodoWrite":
         let todos = i["todos"] as? [[String: Any]] ?? []
         let doing = todos.first { $0["status"] as? String == "in_progress" }
@@ -74,7 +78,15 @@ let durations: DateComponentsFormatter = {
 
 /// One plan limit window from the status line's `rate_limits`.
 struct Limit: Equatable { var pct: Double, resets: Date }
-let limitNames = [("five_hour", "Session"), ("seven_day", "Week")]
+let limitNames = [("five_hour", "Session", 5 * 3600.0), ("seven_day", "Week", 7 * 86400.0)]  // key, menu name, window length
+/// When a limit runs dry at its average pace since the window opened, if that comes before it resets. Menu only.
+/// ponytail: straight-line average, blind to bursts; a recent-rate forecast needs snapshots kept over time
+func runsOut(_ l: Limit, window: TimeInterval, now: Date = Date()) -> Date? {
+    let elapsed = window - l.resets.timeIntervalSince(now)
+    guard l.pct >= 50, l.pct < 100, elapsed > 0 else { return nil }
+    let out = now.addingTimeInterval((100 - l.pct) / l.pct * elapsed)
+    return out < l.resets ? out : nil
+}
 /// One chat, from the status line. `tokens` is what's in the context now, not a running total. `name` and `model` may be empty;
 /// `usd` is Claude Code's list-price estimate, only meaningful on API billing.
 struct Chat: Hashable {
@@ -130,6 +142,10 @@ struct Look {
             .min { ($0.value.mood == .wait ? 1 : 0, $0.value.since.timeIntervalSince1970) < ($1.value.mood == .wait ? 1 : 0, $1.value.since.timeIntervalSince1970) }
     }
     var askDetail: [String: Bubble] = [:]  // what PermissionRequest said a session is about to ask for; the Notification that follows shows it
+    var said: [String: String] = [:]       // each session's last Stop summary, so "Ready when you are" still says what Claude concluded
+    /// Each session's latest tool call, until any later event from that session says it ended. tick() keeps a long one on screen.
+    var running: [String: (mood: Mood, bubble: Bubble, since: Date)] = [:]
+    var runShown: Bubble?                  // the "still running" bubble tick() last put up, so it can refresh its clock
     var lastEvent = Date()
     var sessions: [String: (start: Date, steps: Int, seen: Date)] = [:]
     var offset: UInt64 = 0
@@ -140,6 +156,12 @@ struct Look {
     /// The menu's context rows: the two most recent live chats from the last hour.
     var recentChats: [Chat] {
         Array(chats.filter { !ended.contains($0.key) && $0.value.at.timeIntervalSinceNow > -3600 }.values.sorted { $0.at > $1.at }.prefix(2))
+    }
+    /// The menu's "Today" row: chats the status line saw today, their lines changed, and their cost.
+    /// ponytail: a chat that spans midnight counts in full; splitting it by day needs a snapshot at midnight
+    var today: (chats: Int, added: Int, removed: Int, usd: Double) {
+        let start = Calendar.current.startOfDay(for: Date())
+        return chats.values.filter { $0.at >= start }.reduce((0, 0, 0, 0.0)) { ($0.0 + 1, $0.1 + $1.added, $0.2 + $1.removed, $0.3 + $1.usd) }
     }
     var usageStamp = Date.distantPast             // usage.json mtime last read
     weak var window: NSWindow?
@@ -157,6 +179,7 @@ struct Look {
     /// The user closed the bubble (x or hover). A waiting session is acknowledged, so it won't pop back up.
     func close() {
         if let k = bubble?.session, !k.isEmpty { muted.insert(k) }
+        running.removeAll()  // seen it: don't bring the tool call back as "still running"
         dismiss()
     }
 
@@ -209,19 +232,23 @@ struct Look {
         pending[sid] = (m, b, Date(), term)
         muted.remove(sid)
         if let s = sound { chirp(s) }
-        say(m, b, for: nil)
+        // A lower-priority wait must not cover an ask that's already up; tick() counts it in that bubble's "+1 more" instead.
+        if firstPending?.key == sid { say(m, b, for: nil) } else { last = (m, b) }
     }
 
     func handle(_ e: [String: Any]) {
         let now = Date(), sid = str(e["session"]), project = fileName(e["cwd"]), event = str(e["event"]), term = str(e["term"])
         let helper = str(e["agent"]).isEmpty ? "" : "Helper · "  // hooks fire inside subagents too, with agent_type set
         lastEvent = now
-        look.eventAt = now
+        if event != "PostToolUse" { look.eventAt = now }  // ears twitch once per tool call, not twice
         sessions[sid]?.seen = now
+        running[sid] = nil  // whatever this session was running has ended (or is now waiting on you)
+        if event != "SessionEnd" { ended.remove(sid) }  // a resumed chat keeps its session id
         if event != "Notification" { pending[sid] = nil; muted.remove(sid); askDetail[sid] = nil }  // the session moved on, so the user answered
         switch event {
         case "UserPromptSubmit":
             sessions[sid] = (now, 0, now)
+            said[sid] = nil
             look.effort = 0
             let prompt = str(e["prompt"]).replacingOccurrences(of: "\n", with: " ")
             say(.think, Bubble(icon: "sparkles", title: "On it…", detail: prompt, project: project), for: 10)
@@ -235,6 +262,7 @@ struct Look {
             let tool = str(e["tool"])
             var b = describe(tool: tool, e["input"] as? [String: Any] ?? [:])
             b.title = helper + b.title; b.project = project
+            running[sid] = (moodFor(tool: tool), b, now)
             say(moodFor(tool: tool), b, for: 10)
         case "PostToolUseFailure":
             let err = str(e["error"])
@@ -256,7 +284,7 @@ struct Look {
             let msg = str(e["message"]), kind = str(e["kind"])
             if kind == "idle_prompt" || msg.lowercased().contains("waiting for your input") {
                 if pending[sid]?.mood == .oops { return }  // a stopped session is still stopped; "ready" would hide the error
-                pend(sid, .wait, Bubble(icon: "cup.and.saucer.fill", title: "Ready when you are", project: project), term)
+                pend(sid, .wait, Bubble(icon: "cup.and.saucer.fill", title: "Ready when you are", detail: said[sid] ?? "", project: project), term)
             } else if ["permission_prompt", "elicitation_dialog", "elicitation_url_dialog", "agent_needs_input"].contains(kind) {
                 let b = (kind == "permission_prompt" ? askDetail.removeValue(forKey: sid) : nil)
                     ?? Bubble(icon: "hand.raised.fill", title: "Needs you", detail: msg, project: project)
@@ -288,11 +316,19 @@ struct Look {
             }
             look.effort = 0
             let summary = plain(str(e["summary"]))
+            said[sid] = summary
             chirp("Glass")
             say(.done, Bubble(icon: "checkmark.circle.fill", title: title, detail: summary, project: project), for: 30)
         case "SessionEnd":
             sessions[sid] = nil
+            said[sid] = nil
             ended.insert(sid)
+        case "PreCompact":  // /compact, or automatic when the context fills; held like a long tool call until PostCompact
+            let b = Bubble(icon: "archivebox.fill", title: "Tidying up memory", detail: "Compacting the chat to free up context", project: project)
+            running[sid] = (.think, b, now)
+            say(.think, b, for: 10)
+        case "PostCompact":
+            if bubble?.icon == "archivebox.fill" { dismiss() }  // the title may carry a clock by now
         default: break
         }
     }
@@ -301,7 +337,7 @@ struct Look {
     /// Nudges once at 80% and once at 95% per limit window; context never nudges, the terminal already does.
     func noteUsage(_ j: [String: Any], now: Date = Date()) {
         var u: [String: Limit] = [:], nudge: [String] = [], resetsIn = ""
-        for (key, name) in limitNames {
+        for (key, name, _) in limitNames {
             guard let w = j[key] as? [String: Any], let pct = (w["used_percentage"] as? NSNumber)?.doubleValue,
                   let at = (w["resets_at"] as? NSNumber)?.doubleValue, at > now.timeIntervalSince1970 else { continue }  // expired: stale
             u[key] = Limit(pct: pct, resets: Date(timeIntervalSince1970: at))
@@ -370,11 +406,26 @@ struct Look {
         if look.badge { look.badge = false }
         if menu, now > hideAt { dismiss() }
         if bubble != nil, now > hideAt { dismiss() }
-        if let p = firstPending?.value {
+        if let f = firstPending {
+            let p = f.value
             var want = p.bubble
             let wait = now.timeIntervalSince(p.since)
-            if p.mood != .wait, wait >= 60 { want.detail = "Waiting \(durations.string(from: wait) ?? "")… " + want.detail }
+            let more = pending.keys.filter { $0 != f.key && !muted.contains($0) }.count  // other sessions queued behind this one
+            var notes: [String] = []  // on the detail line: a long title would truncate them
+            if p.mood != .wait, wait >= 60 { notes.append("Waiting \(durations.string(from: wait) ?? "")") }
+            if more > 0 { notes.append("\(more) more waiting") }
+            if !notes.isEmpty { want.detail = notes.joined(separator: " · ") + "… " + want.detail }
             if bubble == nil || (mood == p.mood && bubble != want) { bubble = want; mood = p.mood; hideAt = .distantFuture }
+        }
+        // A tool call still going after its bubble timed out (a build, a test run) comes back with its clock.
+        // ponytail: foreground Bash stops at 10 min, so an entry past 11 is a call whose end we never heard (interrupt, crash)
+        running = running.filter { now.timeIntervalSince($0.value.since) < 660 }
+        if bubble == nil || bubble == runShown, let r = running.values.max(by: { $0.since < $1.since }), now.timeIntervalSince(r.since) >= 10 {
+            var want = r.bubble
+            want.title += " · " + (durations.string(from: now.timeIntervalSince(r.since)) ?? "")
+            if bubble != want { bubble = want; mood = r.mood }
+            runShown = want
+            hideAt = now.addingTimeInterval(2)  // lapses by itself once the call ends
         }
         if bubble == nil {
             // Claude can go quiet mid-task (long thinking); stay busy unless the session is silent for 2 min.
@@ -602,10 +653,16 @@ struct MenuView: View {  // what you get when you click the cat
     var body: some View {
         Card(tint: .orange) {
             VStack(alignment: .leading, spacing: 6) {
-                let limits = limitNames.compactMap { key, name in m.usage[key].map { (name, $0) } }, chats = m.recentChats
+                let limits = limitNames.compactMap { key, name, window in m.usage[key].map { (name, $0, window) } }, chats = m.recentChats
                 if !limits.isEmpty {
                     caption("Plan usage")
-                    ForEach(limits, id: \.0) { name, l in meter(name, l.pct, when(l.resets)) }
+                    ForEach(limits, id: \.0) { name, l, window in
+                        if let out = runsOut(l, window: window) {
+                            meter(name, l.pct, "⚠ " + clock(out)).help("At this pace it runs out around \(clock(out)), before it resets at \(clock(l.resets))")
+                        } else {
+                            meter(name, l.pct, "↻ " + clock(l.resets))
+                        }
+                    }
                 }
                 if !chats.isEmpty {
                     caption("Context")
@@ -616,6 +673,16 @@ struct MenuView: View {  // what you get when you click the cat
                         meter(c.name.isEmpty ? c.project : c.name, c.pct, paid ? String(format: "$%.2f", c.usd) : ctx)
                             .help([c.project, c.model, paid ? ctx : ""].filter { !$0.isEmpty }.joined(separator: " · "))
                     }
+                }
+                let t = m.today
+                if t.chats > 0 {
+                    HStack(spacing: 6) {
+                        caption("Today")
+                        Spacer()
+                        Text("\(t.chats) chat\(t.chats == 1 ? "" : "s") · +\(t.added) −\(t.removed)" + (limits.isEmpty && t.usd > 0 ? String(format: " · $%.2f", t.usd) : ""))
+                            .font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
+                    }
+                    .accessibilityElement(children: .combine)
                 }
                 HStack(spacing: 4) {
                     item("bubble.left.fill", "Last") { m.recall() }
@@ -634,9 +701,9 @@ struct MenuView: View {  // what you get when you click the cat
     func caption(_ s: String) -> some View {
         Text(s.uppercased()).font(.system(size: 9, weight: .bold)).tracking(0.6).foregroundStyle(.secondary)
     }
-    /// A limit's reset: "↻ 3:10 PM" if within a day, else "↻ Thu 3:10 PM".
-    func when(_ d: Date) -> String {
-        "↻ " + (d.timeIntervalSinceNow < 86400 ? "" : d.formatted(.dateTime.weekday()) + " ") + d.formatted(date: .omitted, time: .shortened)
+    /// "3:10 PM" if within a day, else "Thu 3:10 PM".
+    func clock(_ d: Date) -> String {
+        (d.timeIntervalSinceNow < 86400 ? "" : d.formatted(.dateTime.weekday()) + " ") + d.formatted(date: .omitted, time: .shortened)
     }
     /// "Session [bar] 78%  ↻ 3:10 PM" or "vibe-cat [bar] 62%  124K / 200K".
     func meter(_ name: String, _ pct: Double, _ note: String) -> some View {
@@ -752,7 +819,8 @@ final class Host: NSHostingView<Root> {
     check(m.bubble, "Needs you|Allow Bash?|")
     precondition(m.mood == .ask)
     m.handle(["event": "Notification", "session": "b", "cwd": "/b", "message": "Claude is waiting for your input"])
-    precondition(m.mood == .wait && m.pending.count == 2)
+    check(m.bubble, "Needs you|Allow Bash?|")  // b's idle wait queues behind a's ask instead of covering it
+    precondition(m.mood == .ask && m.pending.count == 2)
     m.handle(["event": "PreToolUse", "session": "a", "cwd": "/a", "tool": "Read", "input": ["file_path": "/g.txt"]])
     precondition(m.pending["a"] == nil && m.pending["b"] != nil)
     // Minimised: events are remembered but not shown; a waiting permission shows as a badge.
@@ -761,7 +829,7 @@ final class Host: NSHostingView<Root> {
     m.tick(live: false)
     precondition(m.bubble == nil && m.mood == .quiet && m.look.badge)
     m.quiet = false; m.tick(live: false)
-    check(m.bubble, "Needs you|Allow Write?|")
+    check(m.bubble, "Needs you|1 more waiting… Allow Write?|")  // b's idle wait is queued behind it
     // A PermissionRequest only remembers the specifics; the Notification that follows shows them.
     let p = Model()
     p.quiet = false
@@ -871,6 +939,43 @@ final class Host: NSHostingView<Root> {
                            "d": ["cwd": "/x/delta", "pct": 5, "tokens": 1, "size": 1, "at": t]]])
     u.handle(["event": "SessionEnd", "session": "d", "cwd": "/x/delta"])
     precondition(u.recentChats.map(\.project) == ["beta", "alpha"] && u.recentChats[1].tokens == 124_000)
+    u.handle(["event": "UserPromptSubmit", "session": "d", "cwd": "/x/delta", "prompt": "back"])  // resumed: same id, row returns
+    precondition(!u.ended.contains("d"))
+    // Today's row counts every chat seen today, ended or not.
+    let d = Model()
+    d.noteUsage(["chats": ["x": ["cwd": "/x", "pct": 1, "at": t, "added": 3, "removed": 1, "usd": 0.5], "y": ["cwd": "/y", "pct": 1, "at": t, "added": 2, "usd": 1.0]]])
+    precondition(d.today == (2, 5, 1, 1.5))
+    // Forecast: average pace since the window opened, shown only when it beats the reset.
+    precondition(runsOut(Limit(pct: 60, resets: t0.addingTimeInterval(3 * 86400)), window: 7 * 86400, now: t0) != nil)  // 15%/day, dry in 2.7d
+    precondition(runsOut(Limit(pct: 89, resets: t0.addingTimeInterval(3600)), window: 7 * 86400, now: t0) == nil)       // resets first
+    precondition(runsOut(Limit(pct: 40, resets: t0.addingTimeInterval(86400)), window: 7 * 86400, now: t0) == nil)      // under half: no forecast
+    // A long tool call comes back with its clock after the bubble times out, and lapses once it ends.
+    let r = Model()
+    r.quiet = false; r.faceOnly = false
+    r.handle(["event": "PreToolUse", "session": "r", "cwd": "/r", "tool": "Bash", "input": ["command": "npm test", "description": "Run tests"]])
+    r.running["r"]?.since = Date().addingTimeInterval(-125); r.hideAt = .distantPast; r.tick(live: false)
+    check(r.bubble, "Running · 2m 5s|Run tests|npm test")
+    precondition(r.mood == .work)
+    r.handle(["event": "PostToolUse", "session": "r", "cwd": "/r", "tool": "Bash"])
+    r.hideAt = .distantPast; r.tick(live: false)
+    precondition(r.bubble == nil && r.running.isEmpty)
+    // The idle wait keeps Claude's last summary.
+    r.handle(["event": "Stop", "session": "r", "cwd": "/r", "summary": "Tests **pass**."])
+    r.handle(["event": "Notification", "session": "r", "cwd": "/r", "message": "Claude is waiting for your input", "kind": "idle_prompt"])
+    check(r.bubble, "Ready when you are|Tests pass.|")
+    // Questions and plans say what they are.
+    check(describe(tool: "ExitPlanMode", ["plan": "# Fix the bug\n1. Edit"]), "Plan ready|Fix the bug Edit|")
+    r.handle(["event": "PermissionRequest", "session": "r", "cwd": "/r", "tool": "AskUserQuestion", "input": ["questions": [["question": "Ship it?"], ["question": "Now?"]]]])
+    r.handle(["event": "Notification", "session": "r", "cwd": "/r", "message": "Claude needs your permission", "kind": "permission_prompt"])
+    check(r.bubble, "Needs you · 2 questions|Ship it?|")
+    // Compaction shows while it runs.
+    r.handle(["event": "PreCompact", "session": "r", "cwd": "/r"])
+    check(r.bubble, "Tidying up memory|Compacting the chat to free up context|")
+    precondition(r.mood == .think && r.pending.isEmpty)
+    r.running["r"]?.since = Date().addingTimeInterval(-30.2); r.hideAt = .distantPast; r.tick(live: false)
+    check(r.bubble, "Tidying up memory · 30s|Compacting the chat to free up context|")
+    r.handle(["event": "PostCompact", "session": "r", "cwd": "/r"])
+    precondition(r.bubble == nil)
     print("ok")
 }
 
