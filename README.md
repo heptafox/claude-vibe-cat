@@ -48,15 +48,25 @@ Free and open source under the MIT license. One Swift file, no dependencies, and
 
 ## Install
 
+The easiest way is to let Claude Code do it. Open Claude Code in the folder where you keep your projects and paste this:
+
+```text
+Install VibeCat from https://github.com/heptafox/claude-vibe-cat: make sure the Xcode command line tools and jq are installed, clone the repo into this folder, run ./install.sh, and tell me when I need to restart my Claude Code sessions.
+```
+
+Claude checks the requirements, clones the repo, runs the installer and reports back. Restart your open Claude Code sessions afterwards, because hooks load at session start.
+
+To do it by hand instead:
+
 ```sh
 git clone https://github.com/heptafox/claude-vibe-cat.git
 cd claude-vibe-cat
 ./install.sh     # builds, self-tests, adds the hooks to ~/.claude/settings.json, and starts the cat
 ```
 
-Then restart any open Claude Code sessions, because hooks load at session start. The cat starts at login from then on, and comes back by itself if it ever crashes, through a launchd agent (`~/Library/LaunchAgents/com.heptafox.vibecat.plist`). **Quit** in the menu stops it until your next login; run `./install.sh` again to start it sooner. There is nothing to run by hand.
+Either way, the cat starts at login from then on, and comes back by itself if it ever crashes, through a launchd agent (`~/Library/LaunchAgents/com.heptafox.vibecat.plist`). **Quit** in the menu stops it until your next login; run `./install.sh` again to start it sooner. There is nothing to run by hand.
 
-`install.sh` backs up your settings to `~/.claude/settings.json.bak` and adds its hook next to any you already have, on nine events: PreToolUse, PostToolUseFailure, PermissionRequest, PermissionDenied, Notification, UserPromptSubmit, Stop, StopFailure and SessionEnd. Re-run it after pulling a new version, since that list can change. The hooks point at this folder's `hook.sh`, so keep the folder where it is, or re-run the installer after moving it.
+`install.sh` backs up your settings to `~/.claude/settings.json.bak` and adds its hook next to any you already have, on nine events: PreToolUse, PostToolUseFailure, PermissionRequest, PermissionDenied, Notification, UserPromptSubmit, Stop, StopFailure and SessionEnd. Re-run it after pulling a new version, since that list can change. The hooks point at this folder's `hook.sh`, so keep the folder where it is, or re-run the installer after moving it. To update later, ask Claude Code to pull the latest VibeCat and re-run `./install.sh`.
 
 Claude Code only shares plan usage with its status line, and you can have only one status line, so the installer sets it to `statusline.sh`. If you already had one, its command is saved to `~/.vibecat/statusline-next`. `statusline.sh` runs it on every update with the same input, so your status bar looks the same as before.
 
