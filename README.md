@@ -4,7 +4,7 @@ A tiny desktop cat that shows what [Claude Code](https://claude.com/claude-code)
 
 Free and open source under the MIT license. One Swift file, no dependencies, and nothing leaves your machine.
 
-<p align="center"><img src="docs/menu.png" width="520" alt="The menu: plan usage, context per chat, and controls"></p>
+<p align="center"><img src="docs/menu.png" width="520" alt="The menu: plan usage, model and effort, context per chat, lines changed today, and controls"></p>
 
 <p align="center"><sub>The menu: plan usage, context per chat, and controls.</sub></p>
 
