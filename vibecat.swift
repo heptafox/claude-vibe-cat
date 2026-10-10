@@ -87,11 +87,12 @@ func runsOut(_ l: Limit, window: TimeInterval, now: Date = Date()) -> Date? {
     let out = now.addingTimeInterval((100 - l.pct) / l.pct * elapsed)
     return out < l.resets ? out : nil
 }
-/// One chat, from the status line. `tokens` is what's in the context now, not a running total. `name` and `model` may be empty;
-/// `usd` is Claude Code's list-price estimate, only meaningful on API billing.
+/// One chat, from the status line. `tokens` is what's in the context now, not a running total. `name`, `model` and `effort`
+/// may be empty (no effort on models without the setting); `usd` is Claude Code's list-price estimate, only meaningful on API billing.
 struct Chat: Hashable {
     var project: String, pct: Double, tokens: Int, size: Int, at: Date
-    var name = "", model = "", added = 0, removed = 0, usd = 0.0
+    var name = "", model = "", effort = "", added = 0, removed = 0, usd = 0.0
+    var setup: String { [model, effort].filter { !$0.isEmpty }.joined(separator: " · ") }  // "Opus 5.5 · xhigh"
 }
 
 typealias Pend = (mood: Mood, bubble: Bubble, since: Date, term: String)
@@ -358,7 +359,7 @@ struct Look {
             guard let pct = (v["pct"] as? NSNumber)?.doubleValue, let at = (v["at"] as? NSNumber)?.doubleValue else { continue }
             c[sid] = Chat(project: fileName(v["cwd"]), pct: pct, tokens: (v["tokens"] as? NSNumber)?.intValue ?? 0,
                           size: (v["size"] as? NSNumber)?.intValue ?? 0, at: Date(timeIntervalSince1970: at),
-                          name: str(v["name"]), model: str(v["model"]), added: (v["added"] as? NSNumber)?.intValue ?? 0,
+                          name: str(v["name"]), model: str(v["model"]), effort: str(v["effort"]), added: (v["added"] as? NSNumber)?.intValue ?? 0,
                           removed: (v["removed"] as? NSNumber)?.intValue ?? 0, usd: (v["usd"] as? NSNumber)?.doubleValue ?? 0)
         }
         if c != chats { chats = c }
@@ -618,7 +619,7 @@ struct BubbleView: View {
                 HStack(spacing: 7) {
                     Image(systemName: b.icon).foregroundStyle(tint)
                     ViewThatFits(in: .horizontal) {  // the title wins; a project chip that can't fit whole is dropped, not shrunk to "vib…"
-                        HStack(spacing: 7) { title; Spacer(minLength: 8); if !b.project.isEmpty { chip } }
+                        HStack(spacing: 7) { title; Spacer(minLength: 8); if !b.project.isEmpty { chip(b.project, tint) } }
                         HStack(spacing: 7) { title; Spacer(minLength: 8) }
                     }
                     Button(action: close) {
@@ -641,11 +642,13 @@ struct BubbleView: View {
         .accessibilityElement(children: .combine)  // VoiceOver reads the whole bubble as one line
     }
     var title: some View { Text(b.title).fontWeight(.bold).lineLimit(1) }
-    var chip: some View {
-        Text(b.project).font(.system(size: 11, weight: .bold)).foregroundStyle(tint).lineLimit(1)
-            .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(tint.opacity(0.16), in: Capsule())
-    }
+}
+
+/// Small tinted capsule: the project on a bubble, the model · effort over the menu's chat rows.
+func chip(_ s: String, _ tint: Color) -> some View {
+    Text(s).font(.system(size: 11, weight: .bold)).foregroundStyle(tint).lineLimit(1)
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .background(tint.opacity(0.16), in: Capsule())
 }
 
 struct MenuView: View {  // what you get when you click the cat
@@ -664,15 +667,20 @@ struct MenuView: View {  // what you get when you click the cat
                         }
                     }
                 }
-                if !chats.isEmpty {
-                    caption("Context")
-                    // ponytail: model and folder live in the tooltip; a third column doesn't fit. Cost replaces tokens on API billing
-                    // (no plan limits), where it's real money; plan users would only see a misleading list price.
-                    ForEach(chats, id: \.self) { c in
-                        let ctx = tokens(c.tokens) + " / " + tokens(c.size), paid = limits.isEmpty && c.usd > 0
-                        meter(c.name.isEmpty ? c.project : c.name, c.pct, paid ? String(format: "$%.2f", c.usd) : ctx)
-                            .help([c.project, c.model, paid ? ctx : ""].filter { !$0.isEmpty }.joined(separator: " · "))
+                // Model · effort heads a row only when it differs from the row above, so one setup shows once on the Context line.
+                // ponytail: the folder lives in the tooltip; a third column doesn't fit. Cost replaces tokens on API billing
+                // (no plan limits), where it's real money; plan users would only see a misleading list price.
+                ForEach(chats.indices, id: \.self) { i in
+                    let c = chats[i], ctx = tokens(c.tokens) + " / " + tokens(c.size), paid = limits.isEmpty && c.usd > 0
+                    if i == 0 || c.setup != chats[i - 1].setup {
+                        HStack {
+                            caption(i == 0 ? "Context" : "")
+                            Spacer()
+                            chip(c.setup, .orange).help("Model and effort level of the chat\(i == 0 && chats.dropFirst().allSatisfy { $0.setup == c.setup } ? "s" : " below")")
+                        }
                     }
+                    meter(c.name.isEmpty ? c.project : c.name, c.pct, paid ? String(format: "$%.2f", c.usd) : ctx)
+                        .help([c.project, paid ? ctx : ""].filter { !$0.isEmpty }.joined(separator: " · "))
                 }
                 let t = m.today
                 if t.chats > 0 {
@@ -774,7 +782,7 @@ struct Root: View {
             }
         }
         .padding(14)
-        .frame(width: 440, height: 260, alignment: .bottomTrailing)  // tall enough for the menu with all four meters
+        .frame(width: 440, height: 300, alignment: .bottomTrailing)  // tall enough for the menu with all four meters and two model chips
     }
 }
 
@@ -887,10 +895,11 @@ final class Host: NSHostingView<Root> {
     h.handle(["event": "Notification", "session": "h", "cwd": "/h", "message": "Gave up", "kind": "quota_auto_resume_stale"])
     check(h.bubble, "Didn't resume|Gave up|")
     precondition(h.pending["h"]?.mood == .oops)
-    // Chat metadata from the status line: name and model for the menu, lines changed in the Done title.
+    // Chat metadata from the status line: name, model and effort for the menu, lines changed in the Done title.
     h.noteUsage(["chats": ["h": ["cwd": "/x/proj", "pct": 12, "at": Date().timeIntervalSince1970, "name": "fix bug", "model": "Opus",
-                                 "added": 3, "removed": 1, "usd": 0.42]]])
-    precondition(h.chats["h"]?.name == "fix bug" && h.chats["h"]?.model == "Opus" && h.chats["h"]?.usd == 0.42)
+                                 "effort": "xhigh", "added": 3, "removed": 1, "usd": 0.42]]])
+    precondition(h.chats["h"]?.name == "fix bug" && h.chats["h"]?.setup == "Opus · xhigh" && h.chats["h"]?.usd == 0.42)
+    precondition(Chat(project: "p", pct: 0, tokens: 0, size: 0, at: .now, model: "Haiku").setup == "Haiku")  // no effort setting
     h.handle(["event": "UserPromptSubmit", "session": "h", "cwd": "/h", "prompt": "go"])
     h.handle(["event": "Stop", "session": "h", "cwd": "/h", "summary": "ok"])
     check(h.bubble, "Done · 0s · +3 −1|ok|")
@@ -997,7 +1006,7 @@ MainActor.assumeIsolated {
         origin = NSPointFromString(s)  // where you left it, if that monitor is still here
     }
     // Non-activating panel: clicking the cat never steals focus from what you're doing.
-    let panel = NSPanel(contentRect: NSRect(origin: origin, size: CGSize(width: 440, height: 260)),
+    let panel = NSPanel(contentRect: NSRect(origin: origin, size: CGSize(width: 440, height: 300)),
                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     panel.setFrame(panel.constrainFrameRect(panel.frame, to: NSScreen.screens.first { $0.frame.contains(origin) }), display: false)  // keep the whole panel on screen
     panel.backgroundColor = .clear
