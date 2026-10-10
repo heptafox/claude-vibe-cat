@@ -92,6 +92,7 @@ func runsOut(_ l: Limit, window: TimeInterval, now: Date = Date()) -> Date? {
 struct Chat: Hashable {
     var project: String, pct: Double, tokens: Int, size: Int, at: Date
     var name = "", model = "", effort = "", added = 0, removed = 0, usd = 0.0
+    var pid: Int32 = 0  // the Claude process the status line ran under; 0 = unknown (older statusline.sh)
     var setup: String { [model, effort].filter { !$0.isEmpty }.joined(separator: " · ") }  // "Opus 5.5 · xhigh"
 }
 
@@ -154,9 +155,15 @@ struct Look {
     var warned: [String: Int] = [:]               // "<window><resets_at>" -> highest threshold already nudged, so a new window starts over
     @Published var chats: [String: Chat] = [:]    // session -> context window
     var ended: Set<String> = []                   // SessionEnd seen; usage.json keeps them for a day
-    /// The menu's context rows: the two most recent live chats from the last hour.
+    /// The menu's context rows: the two most recent live chats from the last hour. Live: no SessionEnd seen, its Claude process
+    /// still running (`ended` is lost on restart and a closed tab may never send SessionEnd), and the newest chat in that process
+    /// (/clear and /resume swap the session id under the same one).
+    /// ponytail: a recycled pid can keep a dead chat alive for the rest of its hour
     var recentChats: [Chat] {
-        Array(chats.filter { !ended.contains($0.key) && $0.value.at.timeIntervalSinceNow > -3600 }.values.sorted { $0.at > $1.at }.prefix(2))
+        let live = chats.filter { !ended.contains($0.key) && $0.value.at.timeIntervalSinceNow > -3600 }.values
+            .filter { $0.pid == 0 || kill($0.pid, 0) == 0 }
+        let newest = live.filter { c in c.pid == 0 || !live.contains { $0.pid == c.pid && $0.at > c.at } }
+        return Array(newest.sorted { $0.at > $1.at }.prefix(2))
     }
     /// The menu's "Today" row: chats the status line saw today, their lines changed, and their cost.
     /// ponytail: a chat that spans midnight counts in full; splitting it by day needs a snapshot at midnight
@@ -360,7 +367,8 @@ struct Look {
             c[sid] = Chat(project: fileName(v["cwd"]), pct: pct, tokens: (v["tokens"] as? NSNumber)?.intValue ?? 0,
                           size: (v["size"] as? NSNumber)?.intValue ?? 0, at: Date(timeIntervalSince1970: at),
                           name: str(v["name"]), model: str(v["model"]), effort: str(v["effort"]), added: (v["added"] as? NSNumber)?.intValue ?? 0,
-                          removed: (v["removed"] as? NSNumber)?.intValue ?? 0, usd: (v["usd"] as? NSNumber)?.doubleValue ?? 0)
+                          removed: (v["removed"] as? NSNumber)?.intValue ?? 0, usd: (v["usd"] as? NSNumber)?.doubleValue ?? 0,
+                          pid: (v["pid"] as? NSNumber)?.int32Value ?? 0)
         }
         if c != chats { chats = c }
     }
@@ -941,10 +949,12 @@ final class Host: NSHostingView<Root> {
     precondition(u.mood == .work)
     u.noteUsage(["seven_day": ["used_percentage": 96, "resets_at": 1_000_000 + 86400 * 3]], now: t0)
     check(u.bubble, "Week 96% used|Resets in 3d|")
-    // Context rows: newest chats first, at most two, none older than an hour or ended.
-    let t = Date().timeIntervalSince1970
+    // Context rows: newest chats first, at most two, none older than an hour, ended, from an exited process, or replaced in theirs.
+    let t = Date().timeIntervalSince1970, me = getpid()
     u.noteUsage(["chats": ["a": ["cwd": "/x/alpha", "pct": 62, "tokens": 124_000, "size": 200_000, "at": t - 60],
-                           "b": ["cwd": "/x/beta", "pct": 10, "tokens": 20_000, "size": 200_000, "at": t - 10],
+                           "b": ["cwd": "/x/beta", "pct": 10, "tokens": 20_000, "size": 200_000, "at": t - 10, "pid": me],
+                           "e": ["cwd": "/x/exited", "pct": 1, "at": t - 1, "pid": 99_999_999],
+                           "f": ["cwd": "/x/cleared", "pct": 1, "at": t - 30, "pid": me],
                            "c": ["cwd": "/x/gamma", "pct": 90, "tokens": 900_000, "size": 1_000_000, "at": t - 5000],
                            "d": ["cwd": "/x/delta", "pct": 5, "tokens": 1, "size": 1, "at": t]]])
     u.handle(["event": "SessionEnd", "session": "d", "cwd": "/x/delta"])

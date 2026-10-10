@@ -10,13 +10,14 @@ if command -v jq >/dev/null; then
   f=~/.vibecat/usage.json t=~/.vibecat/usage.json.$$
   [ -s "$f" ] || echo '{}' > "$f"
   # ponytail: concurrent sessions can race this read-modify-write and drop one update; the next status line refresh restores it
-  printf '%s' "$in" | jq -c --slurpfile old "$f" --argjson now "$(date +%s)" '($old[0] // {}) as $o | .context_window as $c
+  # pid: the Claude process that ran us, so vibecat can drop chats whose process has exited
+  printf '%s' "$in" | jq -c --slurpfile old "$f" --argjson now "$(date +%s)" --argjson pid "$PPID" '($old[0] // {}) as $o | .context_window as $c
     | {five_hour: (.rate_limits.five_hour // $o.five_hour), seven_day: (.rate_limits.seven_day // $o.seven_day),
        chats: ((($o.chats // {}) | with_entries(select(.value.at > $now - 86400)))
          + (if .session_id and $c.used_percentage then {(.session_id): {cwd: (.workspace.current_dir // .cwd), pct: $c.used_percentage,
               tokens: (($c.total_input_tokens // 0) + ($c.total_output_tokens // 0)), size: $c.context_window_size, at: $now,
               name: .session_name, model: .model.display_name, effort: .effort.level,
-              added: .cost.total_lines_added, removed: .cost.total_lines_removed, usd: .cost.total_cost_usd}} else {} end))}' \
+              added: .cost.total_lines_added, removed: .cost.total_lines_removed, usd: .cost.total_cost_usd, pid: $pid}} else {} end))}' \
     > "$t" 2>/dev/null && mv "$t" "$f" || rm -f "$t"
 fi
 next=~/.vibecat/statusline-next
