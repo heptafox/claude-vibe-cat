@@ -604,8 +604,9 @@ struct Card<Content: View>: View {  // shared bubble chrome: solid background, t
     @ViewBuilder var content: Content
     var body: some View {
         content
+            .fontDesign(.rounded)  // matches the cat; SF Rounded reads better than SF at these small sizes
             .padding(.leading, 14).padding(.trailing, 22).padding(.vertical, 11)
-            .frame(width: 300, alignment: .leading)  // fixed width so it doesn't jump around between events
+            .frame(width: 320, alignment: .leading)  // fixed width so it doesn't jump around between events
             .background(BubbleShape().fill(Color(nsColor: .windowBackgroundColor)).shadow(color: .black.opacity(0.3), radius: 10, y: 4))
             .overlay(BubbleShape().stroke(tint.opacity(0.45), lineWidth: 1))
     }
@@ -630,10 +631,10 @@ struct BubbleView: View {
                 }
                 .font(.system(size: 14))
                 if !b.detail.isEmpty {
-                    Text(b.detail).font(.system(size: 13)).foregroundStyle(.primary.opacity(0.85)).lineLimit(2)
+                    Text(b.detail).font(.system(size: 13)).lineLimit(2)
                 }
                 if !b.code.isEmpty {
-                    Text(b.code).font(.system(size: 12, design: .monospaced)).foregroundStyle(.primary.opacity(0.9)).lineLimit(1)
+                    Text(b.code).font(.system(size: 12, design: .monospaced)).lineLimit(1)
                         .padding(.horizontal, 7).padding(.vertical, 4)
                         .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
                 }
@@ -646,7 +647,7 @@ struct BubbleView: View {
 
 /// Small tinted capsule: the project on a bubble, the model · effort over the menu's chat rows.
 func chip(_ s: String, _ tint: Color) -> some View {
-    Text(s).font(.system(size: 11, weight: .bold)).foregroundStyle(tint).lineLimit(1)
+    Text(s).font(.system(size: 12, weight: .bold)).foregroundStyle(tint).lineLimit(1)
         .padding(.horizontal, 8).padding(.vertical, 3)
         .background(tint.opacity(0.16), in: Capsule())
 }
@@ -688,7 +689,7 @@ struct MenuView: View {  // what you get when you click the cat
                         caption("Today")
                         Spacer()
                         Text("\(t.chats) chat\(t.chats == 1 ? "" : "s") · +\(t.added) −\(t.removed)" + (limits.isEmpty && t.usd > 0 ? String(format: " · $%.2f", t.usd) : ""))
-                            .font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
+                            .font(.system(size: 12)).monospacedDigit().foregroundStyle(.secondary)
                     }
                     .accessibilityElement(children: .combine)
                 }
@@ -707,7 +708,7 @@ struct MenuView: View {  // what you get when you click the cat
     }
     func tokens(_ n: Int) -> String { n.formatted(.number.notation(.compactName).locale(Locale(identifier: "en_US"))) }  // 124K, 1M: tokens are counted in K/M everywhere
     func caption(_ s: String) -> some View {
-        Text(s.uppercased()).font(.system(size: 9, weight: .bold)).tracking(0.6).foregroundStyle(.secondary)
+        Text(s.uppercased()).font(.system(size: 10, weight: .bold)).tracking(0.8).foregroundStyle(.secondary)
     }
     /// "3:10 PM" if within a day, else "Thu 3:10 PM".
     func clock(_ d: Date) -> String {
@@ -716,21 +717,21 @@ struct MenuView: View {  // what you get when you click the cat
     /// "Session [bar] 78%  ↻ 3:10 PM" or "vibe-cat [bar] 62%  124K / 200K".
     func meter(_ name: String, _ pct: Double, _ note: String) -> some View {
         HStack(spacing: 6) {
-            Text(name).fontWeight(.semibold).truncationMode(.middle).frame(width: 80, alignment: .leading)
+            Text(name).fontWeight(.semibold).truncationMode(.middle).frame(width: 88, alignment: .leading)
             Capsule().fill(Color.primary.opacity(0.1)).frame(height: 6).overlay(alignment: .leading) {
                 GeometryReader { g in
                     Capsule().fill(pct >= 80 ? Color.red : pct >= 50 ? .orange : .green).frame(width: g.size.width * min(pct, 100) / 100)
                 }
             }
             Text("\(Int(pct))%").monospacedDigit().frame(width: 32, alignment: .trailing)
-            Text(note).monospacedDigit().foregroundStyle(.secondary).frame(width: 78, alignment: .trailing)
+            Text(note).monospacedDigit().foregroundStyle(.secondary).frame(width: 86, alignment: .trailing)
         }
-        .font(.system(size: 11)).lineLimit(1)
+        .font(.system(size: 12)).lineLimit(1)
         .accessibilityElement(children: .combine)
     }
     func item(_ icon: String, _ label: String, _ act: @escaping () -> Void) -> some View {
         Button(action: act) {
-            VStack(spacing: 3) { Image(systemName: icon).font(.system(size: 15)); Text(label).font(.system(size: 10, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.8) }
+            VStack(spacing: 3) { Image(systemName: icon).font(.system(size: 15)); Text(label).font(.system(size: 11, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.8) }
                 .frame(maxWidth: .infinity).padding(.vertical, 6)
                 .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
         }
@@ -782,7 +783,7 @@ struct Root: View {
             }
         }
         .padding(14)
-        .frame(width: 440, height: 300, alignment: .bottomTrailing)  // tall enough for the menu with all four meters and two model chips
+        .frame(width: 440, height: 320, alignment: .bottomTrailing)  // tall enough for the menu with all four meters and two model chips
     }
 }
 
@@ -1006,7 +1007,7 @@ MainActor.assumeIsolated {
         origin = NSPointFromString(s)  // where you left it, if that monitor is still here
     }
     // Non-activating panel: clicking the cat never steals focus from what you're doing.
-    let panel = NSPanel(contentRect: NSRect(origin: origin, size: CGSize(width: 440, height: 300)),
+    let panel = NSPanel(contentRect: NSRect(origin: origin, size: CGSize(width: 440, height: 320)),
                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     panel.setFrame(panel.constrainFrameRect(panel.frame, to: NSScreen.screens.first { $0.frame.contains(origin) }), display: false)  // keep the whole panel on screen
     panel.backgroundColor = .clear
