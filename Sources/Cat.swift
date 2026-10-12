@@ -90,6 +90,15 @@ func drawCat(_ ctx: GraphicsContext, _ size: CGSize, _ l: Look, t: Double) {
     h.fill(oval(37, 43, 26, 17), with: .color(cream))
     h.fill(oval(19, 45, 12, 7), with: .color(blush.opacity(0.6 + 0.3 * heat)))  // cheeks flush with the fur
     h.fill(oval(69, 45, 12, 7), with: .color(blush.opacity(0.6 + 0.3 * heat)))
+    if !l.collar.isEmpty {  // a plan limit past 80%: red collar under the chin, a tag per limit saying which (5h / 7d)
+        let band = curve(P(31, 61), P(50, 72), P(69, 61))
+        line(h, band, 5); line(h, band, 3, .red)
+        for (k, tag) in l.collar.enumerated() {
+            let x = CGFloat(50 - 7 * (l.collar.count - 1) + 14 * k)  // one tag centred, two side by side
+            paint(h, Path(roundedRect: CGRect(x: x - 6.5, y: 68, width: 13, height: 8.5), cornerRadius: 2.5), cream, 1.4)
+            h.draw(Text(tag).font(.system(size: 7, weight: .heavy, design: .rounded)).foregroundColor(ink), at: P(x, 72.2))
+        }
+    }
 
     let look: CGPoint = switch mood {  // work: eyes on the bubble; think: up and away; wait: downcast
     case .work, .edit: P(-2, 1.5)

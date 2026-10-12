@@ -5,7 +5,7 @@ import SwiftUI
 
 /// One plan limit window from the status line's `rate_limits`.
 struct Limit: Equatable { var pct: Double, resets: Date }
-let limitNames = [("five_hour", "Session", 5 * 3600.0), ("seven_day", "Week", 7 * 86400.0)]  // key, menu name, window length
+let limitNames = [("five_hour", "Session", 5 * 3600.0, "5h"), ("seven_day", "Week", 7 * 86400.0, "7d")]  // key, menu name, window length, collar tag
 /// When a limit runs dry at its average pace since the window opened, if that comes before it resets. Menu only.
 /// ponytail: straight-line average, blind to bursts; a recent-rate forecast needs snapshots kept over time
 func runsOut(_ l: Limit, window: TimeInterval, now: Date = Date()) -> Date? {
@@ -61,6 +61,7 @@ struct Look {
     var badge = false     // minimised with an ask or a stopped session waiting: small "!" so you still notice
     var heat = 0.0        // the fullest live chat's context, 0 at 50% … 1 at 100%: the fur reddens, in every mood
     var splash = Date.distantPast, splashFrom = 0.0  // when the context last dropped and from what heat: drops rain, the tint fades, steam rises
+    var collar: [String] = []  // tags of the plan limits at 80% or more ("5h", "7d"): a red collar with one tag each, off once the window resets
 }
 
 @MainActor final class Model: ObservableObject {
@@ -91,7 +92,12 @@ struct Look {
     var lastEvent = Date()
     var sessions: [String: (start: Date, steps: Int, seen: Date)] = [:]
     var offset: UInt64 = 0
-    @Published var usage: [String: Limit] = [:]  // five_hour / seven_day; empty for API-key users
+    @Published var usage: [String: Limit] = [:] {  // five_hour / seven_day; empty for API-key users
+        didSet {  // the collar follows every path usage changes on: a climb, a new window, a window that passed its reset
+            let c = limitNames.compactMap { k, _, _, tag in (usage[k]?.pct ?? 0) >= 80 ? tag : nil }
+            if look.collar != c { look.collar = c }
+        }
+    }
     var warned: [String: Int] = [:]               // "<window><resets_at>" -> highest threshold already nudged, so a new window starts over
     var voice: Process?                           // the `say` child mid-phrase; AVSpeechSynthesizer clipped the end of every phrase on macOS, NSSpeechSynthesizer is deprecated
     @Published var chats: [String: Chat] = [:]    // session -> context window
@@ -308,7 +314,7 @@ struct Look {
     /// Nudges once at 80% and once at 95% per limit window; context never nudges, the terminal already does.
     func noteUsage(_ j: [String: Any], now: Date = Date()) {
         var u: [String: Limit] = [:], nudge: [String] = [], resetsIn = ""
-        for (key, name, _) in limitNames {
+        for (key, name, _, _) in limitNames {
             guard let w = j[key] as? [String: Any], let pct = (w["used_percentage"] as? NSNumber)?.doubleValue,
                   let at = (w["resets_at"] as? NSNumber)?.doubleValue, at > now.timeIntervalSince1970 else { continue }  // expired: stale
             u[key] = Limit(pct: pct, resets: Date(timeIntervalSince1970: at))

@@ -140,9 +140,10 @@ import SwiftUI
         ["five_hour": ["used_percentage": pct, "resets_at": resets], "seven_day": ["used_percentage": 40, "resets_at": 1_000_000 + 86400 * 3]]
     }
     u.noteUsage(snap(50, 1_003_600), now: t0)
-    precondition(u.bubble == nil && u.usage["five_hour"]?.pct == 50 && u.usage["seven_day"]?.pct == 40)
+    precondition(u.bubble == nil && u.usage["five_hour"]?.pct == 50 && u.usage["seven_day"]?.pct == 40 && u.look.collar == [])
     u.noteUsage(snap(82, 1_003_600), now: t0)
     check(u.bubble, "Session 82% used|Resets in 1h|")
+    precondition(u.look.collar == ["5h"])  // the collar stays on from 80% up, whatever the nudge did
     u.dismiss()
     u.noteUsage(snap(85, 1_003_600), now: t0)
     precondition(u.bubble == nil)
@@ -152,14 +153,15 @@ import SwiftUI
     u.noteUsage(snap(81, 1_021_600), now: t0)
     check(u.bubble, "Session 81% used|Resets in 6h|")
     u.noteUsage(snap(81, 999_000), now: t0)
-    precondition(u.usage["five_hour"] == nil && u.usage["seven_day"] != nil)
+    precondition(u.usage["five_hour"] == nil && u.usage["seven_day"] != nil && u.look.collar == [])  // the window reset: collar off
     // Both limits crossing in one snapshot share a bubble; the weekly reset is in days; a working cat keeps its face.
     u.mood = .work
     u.noteUsage(["five_hour": ["used_percentage": 96, "resets_at": 1_050_000], "seven_day": ["used_percentage": 85, "resets_at": 1_000_000 + 86400 * 3]], now: t0)
     check(u.bubble, "Session 96% · Week 85% used|Resets in 13h 53m|")
-    precondition(u.mood == .work)
+    precondition(u.mood == .work && u.look.collar == ["5h", "7d"])
     u.noteUsage(["seven_day": ["used_percentage": 96, "resets_at": 1_000_000 + 86400 * 3]], now: t0)
     check(u.bubble, "Week 96% used|Resets in 3d|")
+    precondition(u.look.collar == ["7d"])
     // Context rows: newest chats first, at most two, none older than an hour, ended, from an exited process, or replaced in theirs.
     let t = Date().timeIntervalSince1970, me = getpid()
     u.noteUsage(["chats": ["a": ["cwd": "/x/alpha", "pct": 62, "tokens": 124_000, "size": 200_000, "at": t - 60],

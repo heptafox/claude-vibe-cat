@@ -72,7 +72,7 @@ struct MenuView: View {  // what you get when you click the cat
     var body: some View {
         Card(tint: .orange) {
             VStack(alignment: .leading, spacing: 6) {
-                let limits = limitNames.compactMap { key, name, window in m.usage[key].map { (name, $0, window) } }, chats = m.recentChats
+                let limits = limitNames.compactMap { key, name, window, _ in m.usage[key].map { (name, $0, window) } }, chats = m.recentChats
                 if !limits.isEmpty {
                     caption("Plan usage")
                     ForEach(limits, id: \.0) { name, l, window in
