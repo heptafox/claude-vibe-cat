@@ -25,6 +25,15 @@ struct Chat: Hashable {
 
 typealias Pend = (mood: Mood, bubble: Bubble, since: Date, term: String)
 
+/// Where a session's effort starts, from the chat's configured effort level: an xhigh session looks determined from its first step.
+let effortFloor = ["medium": 0.1, "high": 0.2, "xhigh": 0.35, "max": 0.5]
+/// A Stop summary that reads as a struggle, so the done face keeps its sweat.
+/// ponytail: a word list, no sentiment model; "error" is left out since "fixed the error" is good news
+func rough(_ summary: String) -> Bool {
+    summary.range(of: #"\b(couldn|can|didn|wasn)[’']t\b|\b(cannot|unable|failed|failing|stuck|blocked|gave up|not possible)\b"#,
+                  options: [.regularExpression, .caseInsensitive]) != nil
+}
+
 enum Mood {
     case idle, sleep, quiet, think, read, edit, work, ask, wait, done, oops
     var animated: Bool { self != .idle && self != .sleep && self != .quiet }
@@ -45,7 +54,8 @@ enum Mood {
 /// Everything the drawing needs, in one bag.
 struct Look {
     var mood = Mood.idle, blink = false
-    var effort = 0.0      // 0 fresh … 1 grinding: adds furrowed brows and a sweat drop
+    var effort = 0.0      // 0 fresh … 1 grinding: brows knit from 0.2, ears droop and typing speeds up, sweat from 0.6, heavy lids from 0.75
+    var asking = false    // the last Stop summary ended in a question: the done face tilts its head
     var eventAt = Date.distantPast  // ears twitch right after an event
     var badge = false     // minimised with an ask or a stopped session waiting: small "!" so you still notice
 }
@@ -180,19 +190,21 @@ struct Look {
         running[sid] = nil  // whatever this session was running has ended (or is now waiting on you)
         if event != "SessionEnd" { ended.remove(sid) }  // a resumed chat keeps its session id
         if event != "Notification" { pending[sid] = nil; muted.remove(sid); askDetail[sid] = nil }  // the session moved on, so the user answered
+        look.asking = false
+        let floor = effortFloor[chats[sid]?.effort ?? ""] ?? 0
         switch event {
         case "UserPromptSubmit":
             sessions[sid] = (now, 0, now)
             said[sid] = nil
-            look.effort = 0
+            look.effort = floor
             let prompt = str(e["prompt"]).replacingOccurrences(of: "\n", with: " ")
             say(.think, Bubble(icon: "sparkles", title: "On it…", detail: prompt, project: project), for: 10)
         case "PreToolUse":
             if helper.isEmpty {  // ponytail: helpers' calls still drive the mood and bubble, just not the step count
                 sessions[sid, default: (now, 0, now)].steps += 1
                 let s = sessions[sid]!
-                // ponytail: effort = steps and wall time; no notion of what the task actually is
-                look.effort = min(1, Double(s.steps) / 30 + now.timeIntervalSince(s.start) / 600)
+                // ponytail: effort = configured level, steps and wall time; no notion of what the task actually is
+                look.effort = min(1, floor + Double(s.steps) / 30 + now.timeIntervalSince(s.start) / 600)
             }
             let tool = str(e["tool"])
             var b = describe(tool: tool, e["input"] as? [String: Any] ?? [:])
@@ -249,8 +261,9 @@ struct Look {
                 // ponytail: the status line refreshes on its own clock, so this is its last count, which may trail this Stop by a tick
                 if let c = chats[sid], c.added + c.removed > 0 { title += " · +\(c.added) −\(c.removed)" }
             }
-            look.effort = 0
             let summary = plain(str(e["summary"]))
+            look.effort = rough(summary) ? max(look.effort, 0.7) : 0  // a struggle ends with a "phew": sweat stays on the done face
+            look.asking = summary.hasSuffix("?")
             said[sid] = summary
             chirp("Glass")
             say(.done, Bubble(icon: "checkmark.circle.fill", title: title, detail: summary, project: project), for: 30)
@@ -368,6 +381,7 @@ struct Look {
             let busy = sessions.values.contains { now.timeIntervalSince($0.seen) < 120 }
             let m: Mood = busy ? (mood == .think ? .think : .work) : now.timeIntervalSince(lastEvent) > 300 ? .sleep : .idle
             if m != mood { mood = m }
+            if !busy, look.effort > 0 { look.effort = 0 }  // the "phew" wears off once the done bubble is gone
         }
         if mood.animated, mood != .ask, !look.blink, Int.random(in: 0..<14) == 0 {  // no blinking mid-plea, it reads as yawning
             look.blink = true

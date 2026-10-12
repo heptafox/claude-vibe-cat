@@ -112,8 +112,17 @@ import SwiftUI
     precondition(h.chats["h"]?.name == "fix bug" && h.chats["h"]?.setup == "Opus · xhigh" && h.chats["h"]?.usd == 0.42)
     precondition(Chat(project: "p", pct: 0, tokens: 0, size: 0, at: .now, model: "Haiku").setup == "Haiku")  // no effort setting
     h.handle(["event": "UserPromptSubmit", "session": "h", "cwd": "/h", "prompt": "go"])
+    precondition(h.look.effort == 0.35)  // an xhigh chat looks determined before its first tool call
     h.handle(["event": "Stop", "session": "h", "cwd": "/h", "summary": "ok"])
     check(h.bubble, "Done · 0s · +3 −1|ok|")
+    precondition(h.look.effort == 0 && !h.look.asking)
+    // The summary's tone shapes the done face: a struggle keeps the sweat, a question tilts the head, the next prompt clears both.
+    h.handle(["event": "UserPromptSubmit", "session": "h", "cwd": "/h", "prompt": "go"])
+    h.handle(["event": "Stop", "session": "h", "cwd": "/h", "summary": "I couldn't reproduce it. Want me to keep digging?"])
+    precondition(h.look.effort == 0.7 && h.look.asking)
+    precondition(rough("Fixed the error, tests pass") == false && rough("Can’t build it") && rough("The build failed"))
+    h.handle(["event": "UserPromptSubmit", "session": "h", "cwd": "/h", "prompt": "yes"])
+    precondition(h.look.effort == 0.35 && !h.look.asking)
     precondition(!n.muted.contains("d"))
     // Face-only: the mood still changes, but no text is shown unless asked for with "Last".
     n.faceOnly = true

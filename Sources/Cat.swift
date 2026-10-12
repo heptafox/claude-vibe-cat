@@ -29,22 +29,24 @@ func drawCat(_ ctx: GraphicsContext, _ size: CGSize, _ l: Look, t: Double) {
     let mood = l.mood, resting = mood == .sleep || mood == .quiet
     var g = ctx
     g.scaleBy(x: size.width / 100, y: size.height / 100)
-    var hop = 0.0, bob = 0.0, tilt = 0.0, wag = 0.0, tap = 0.0, ear = 0.0, scan = 0.0
+    // How hard it's going, 0…1: faster typing, knitted brows, drooping ears, sweat, heavy lids. Resting, waiting and asking faces stay clean.
+    let worn = [.idle, .sleep, .quiet, .wait, .ask].contains(mood) ? 0 : l.effort, pace = 1 + worn * 0.5
+    var hop = 0.0, bob = 0.0, tilt = 0.0, wag = 0.0, tap = 0.0, ear = worn * 10, scan = 0.0
     switch mood {
-    case .work: bob = sin(t * 7) * 1.2; wag = sin(t * 3) * 14; tap = sin(t * 7)  // busy typing
-    case .edit: bob = sin(t * 5) * 0.8; wag = sin(t * 2) * 8; tap = sin(t * 5)   // heads-down
-    case .read: scan = sin(t * 2.2) * 3; wag = sin(t * 1.4) * 10; ear = -12      // scanning, one ear cocked
-    case .think: tilt = sin(t * 1.3) * 5; wag = sin(t * 1.5) * 8                 // head tilt
-    case .ask: hop = -abs(sin(t * 5)) * 6; wag = sin(t * 6) * 18                 // bouncing for attention
-    case .wait: wag = sin(t * 1.2) * 6                                           // patient
-    case .done: hop = -abs(sin(t * 3.5)) * 3; wag = sin(t * 2) * 10              // happy hops
-    case .oops: ear = 22; wag = sin(t * 1) * 4                                   // ears back
-    case .sleep, .quiet: ear = 18                                                // ears droop
+    case .work: bob = sin(t * 7 * pace) * 1.2; wag = sin(t * 3) * 14; tap = sin(t * 7 * pace)  // busy typing, frantic when worn
+    case .edit: bob = sin(t * 5 * pace) * 0.8; wag = sin(t * 2) * 8; tap = sin(t * 5 * pace)   // heads-down
+    case .read: scan = sin(t * 2.2) * 3; wag = sin(t * 1.4) * 10; ear = -12                    // scanning, one ear cocked
+    case .think: tilt = sin(t * 1.3) * 5; wag = sin(t * 1.5) * 8                               // head tilt
+    case .ask: hop = -abs(sin(t * 5)) * 6; wag = sin(t * 6) * 18                               // bouncing for attention
+    case .wait: wag = sin(t * 1.2) * 6                                                         // patient
+    case .done: hop = -abs(sin(t * 3.5)) * 3; wag = sin(t * 2) * 10; tilt = l.asking ? 8 + sin(t * 1.3) * 3 : 0  // happy hops; "well?" when it asked something
+    case .oops: ear = 22; wag = sin(t * 1) * 4                                                 // ears back
+    case .sleep, .quiet: ear = 18                                                              // ears droop
     default: break
     }
     let since = Date().timeIntervalSince(l.eventAt)
     let twitch = since < 0.35 ? sin(since / 0.35 * .pi * 2) * 9 : 0
-    let strained = l.effort > 0.5 && (mood == .work || mood == .edit || mood == .read || mood == .think)
+    let brow = mood == .oops ? 1 : min(1, max(0, worn - 0.2) / 0.5)  // 0 none … 1 fully furrowed
 
     g.fill(oval(31 - hop * 0.6, 93, 38 + hop * 1.2, 6), with: .color(.black.opacity(0.18)))  // ground shadow shrinks as it hops
     if resting {  // squash a little when curled up
@@ -105,10 +107,11 @@ func drawCat(_ ctx: GraphicsContext, _ size: CGSize, _ l: Look, t: Double) {
             h.fill(oval(c.x - 4 * k, c.y - 5 * k, 8 * k, 10 * k), with: .color(ink))
             h.fill(oval(c.x - 0.5, c.y - 4.5, 3.4, 3.4), with: .color(.white))
             if mood == .ask { h.fill(oval(c.x - 2.5, c.y + 1.5, 1.8, 1.8), with: .color(.white)) }
-            if mood == .edit { h.fill(Path(CGRect(x: c.x - 5, y: c.y - 6, width: 10, height: 5.5)), with: .color(fur)) }  // narrowed, focused
+            let lid = max(mood == .edit ? 5.5 : 0, max(0, worn - 0.75) * 22)  // narrowed when focused; lids sag when worn out
+            if lid > 0 { h.fill(Path(CGRect(x: c.x - 5, y: c.y - 6, width: 10, height: lid)), with: .color(fur)) }
         }
-        if strained || mood == .oops {  // furrowed brows slope in toward the nose
-            line(h, seg(P(c.x - 5 * inward, 27), P(c.x + 3 * inward, 30)), 2.2)
+        if brow > 0 {  // furrowed brows slope in toward the nose, steeper and darker the harder it's going
+            line(h, seg(P(c.x - 5 * inward, 29 - 2 * brow), P(c.x + 3 * inward, 29 + 1.5 * brow)), 2.2, ink.opacity(0.35 + 0.65 * brow))
         }
     }
     paint(h, shape(P(46.5, 46), P(53.5, 46), P(50, 50)), blush, 1.2)
@@ -126,7 +129,7 @@ func drawCat(_ ctx: GraphicsContext, _ size: CGSize, _ l: Look, t: Double) {
     for (a, b) in [(P(23, 49), P(8, 46)), (P(23, 52.5), P(8, 54.5)), (P(77, 49), P(92, 46)), (P(77, 52.5), P(92, 54.5))] {
         line(h, seg(a, b), 1.3, ink.opacity(0.75))
     }
-    if strained || mood == .oops {  // sweat drop sliding down the temple
+    if worn > 0.6 || mood == .oops {  // sweat drop sliding down the temple
         let dy = (t * 0.7).truncatingRemainder(dividingBy: 1) * 4
         paint(h, oval(80, 28 + dy, 5, 7), sweat, 1.2)
     }
@@ -137,7 +140,7 @@ func drawCat(_ ctx: GraphicsContext, _ size: CGSize, _ l: Look, t: Double) {
         let n = Int(t * 2) % 4
         for k in 0..<min(n, 3) { g.fill(oval(80 + CGFloat(k) * 6, 12 - CGFloat(k) * 3, 4.5, 4.5), with: .color(ink.opacity(0.5))) }
     case .ask: g.draw(Text("!").font(mark).foregroundColor(blush), at: P(88, 12 + abs(sin(t * 5)) * 3))
-    case .done: g.draw(Text("♥").font(mark).foregroundColor(blush), at: P(86, 14 - abs(sin(t * 3.5)) * 2))
+    case .done where worn <= 0.6: g.draw(Text("♥").font(mark).foregroundColor(blush), at: P(86, 14 - abs(sin(t * 3.5)) * 2))  // a rough finish gets the sweat drop instead
     case .sleep:
         g.draw(Text("z").font(.system(size: 11, weight: .heavy, design: .rounded)).foregroundColor(ink.opacity(0.55)), at: P(82, 19))
         g.draw(Text("Z").font(.system(size: 15, weight: .heavy, design: .rounded)).foregroundColor(ink.opacity(0.55)), at: P(91, 9))
