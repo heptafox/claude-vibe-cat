@@ -172,6 +172,16 @@ import SwiftUI
     precondition(u.recentChats.map(\.project) == ["beta", "alpha"] && u.recentChats[1].tokens == 124_000)
     u.handle(["event": "UserPromptSubmit", "session": "d", "cwd": "/x/delta", "prompt": "back"])  // resumed: same id, row returns
     precondition(!u.ended.contains("d"))
+    // Heat: the fullest live chat, 0 at 50% … 1 at 100%. gamma at 90% is stale, so alpha at 62% sets it.
+    precondition(abs(u.look.heat - 0.24) < 0.01 && u.look.splash == .distantPast)
+    u.noteUsage(["chats": ["a": ["cwd": "/x/alpha", "pct": 80, "at": t - 60], "b": ["cwd": "/x/beta", "pct": 10, "at": t - 10, "pid": me]]])
+    precondition(abs(u.look.heat - 0.6) < 0.01 && u.look.splash == .distantPast)
+    u.bubble = nil
+    u.noteUsage(["chats": ["a": ["cwd": "/x/alpha", "pct": 85, "at": t - 60], "b": ["cwd": "/x/beta", "pct": 10, "at": t - 10, "pid": me]]])
+    precondition(abs(u.look.heat - 0.7) < 0.01 && u.bubble == nil)  // climbing is quiet
+    u.noteUsage(["chats": ["a": ["cwd": "/x/alpha", "pct": 5, "at": t - 60], "b": ["cwd": "/x/beta", "pct": 10, "at": t - 10, "pid": me]]])  // /clear
+    precondition(u.look.heat == 0 && abs(u.look.splashFrom - 0.7) < 0.01 && u.look.splash.timeIntervalSinceNow > -1)
+    check(u.bubble, "Fresh start|The context is cleared|")
     // Today's row counts every chat seen today, ended or not.
     let d = Model()
     d.noteUsage(["chats": ["x": ["cwd": "/x", "pct": 1, "at": t, "added": 3, "removed": 1, "usd": 0.5], "y": ["cwd": "/y", "pct": 1, "at": t, "added": 2, "usd": 1.0]]])

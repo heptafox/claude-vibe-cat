@@ -27,6 +27,10 @@ func rotated(_ g: GraphicsContext, about c: CGPoint, by deg: Double) -> Graphics
 
 func drawCat(_ ctx: GraphicsContext, _ size: CGSize, _ l: Look, t: Double) {
     let mood = l.mood, resting = mood == .sleep || mood == .quiet
+    // A full context runs hot: the fur shades toward red. After a drop the old tint fades out over the splash.
+    let splashed = Date().timeIntervalSince(l.splash), heat = max(l.heat, l.splashFrom * max(0, 1 - splashed / 1.5))
+    let fur = Color(red: 0.98, green: 0.74 - 0.30 * heat, blue: 0.45 - 0.25 * heat)
+    let stripe = Color(red: 0.90, green: 0.55 - 0.25 * heat, blue: 0.27 - 0.15 * heat)
     var g = ctx
     g.scaleBy(x: size.width / 100, y: size.height / 100)
     // How hard it's going, 0…1: faster typing, knitted brows, drooping ears, sweat, heavy lids. Resting, waiting and asking faces stay clean.
@@ -84,8 +88,8 @@ func drawCat(_ ctx: GraphicsContext, _ size: CGSize, _ l: Look, t: Double) {
         line(h, seg(a, b), 2.6, stripe)
     }
     h.fill(oval(37, 43, 26, 17), with: .color(cream))
-    h.fill(oval(19, 45, 12, 7), with: .color(blush.opacity(0.6)))
-    h.fill(oval(69, 45, 12, 7), with: .color(blush.opacity(0.6)))
+    h.fill(oval(19, 45, 12, 7), with: .color(blush.opacity(0.6 + 0.3 * heat)))  // cheeks flush with the fur
+    h.fill(oval(69, 45, 12, 7), with: .color(blush.opacity(0.6 + 0.3 * heat)))
 
     let look: CGPoint = switch mood {  // work: eyes on the bubble; think: up and away; wait: downcast
     case .work, .edit: P(-2, 1.5)
@@ -135,6 +139,12 @@ func drawCat(_ ctx: GraphicsContext, _ size: CGSize, _ l: Look, t: Double) {
     if worn > 0.6 || mood == .oops {  // sweat drop sliding down the temple
         let dy = (t * 0.7).truncatingRemainder(dividingBy: 1) * 4
         paint(h, oval(80, 28 + dy, 5, 7), sweat, 1.2)
+    }
+    if splashed < 1 {  // the context dropped: a splash of water rains through
+        for k in 0..<3 { paint(g, oval(30 + CGFloat(k) * 20, -10 + splashed * 100 - CGFloat(k) * 8, 5, 7), sweat, 1.2) }
+    } else if splashed < 2 {  // and steams off
+        let rise = (splashed - 1) * 6, steam = Font.system(size: 16, weight: .heavy, design: .rounded)
+        for (x, y) in [(44.0, 12.0), (58.0, 9.0)] { g.draw(Text("~").font(steam).foregroundColor(sweat.opacity(0.9 * (2 - splashed))), at: P(x, y - rise)) }  // water colour: ink vanishes on a dark desktop
     }
 
     let mark = Font.system(size: 16, weight: .heavy, design: .rounded)

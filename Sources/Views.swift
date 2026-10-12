@@ -179,7 +179,7 @@ struct Root: View {
                     .transition(.scale(scale: 0.5, anchor: .bottomTrailing).combined(with: .opacity))
             }
             // Redraws only while the cat is moving; idle, asleep and minimised cost nothing.
-            TimelineView(.animation(minimumInterval: 1 / 30, paused: !m.mood.animated && !m.look.speaking && Date().timeIntervalSince(m.look.eventAt) > 0.5)) { tl in
+            TimelineView(.animation(minimumInterval: 1 / 30, paused: !m.mood.animated && !m.look.speaking && Date().timeIntervalSince(m.look.eventAt) > 0.5 && Date().timeIntervalSince(m.look.splash) > 2)) { tl in
                 Canvas { g, size in drawCat(g, size, m.look, t: tl.date.timeIntervalSinceReferenceDate) }
             }
             .frame(width: 96, height: 96)

@@ -59,6 +59,8 @@ struct Look {
     var asking = false    // the last Stop summary ended in a question: the done face tilts its head
     var eventAt = Date.distantPast  // ears twitch right after an event
     var badge = false     // minimised with an ask or a stopped session waiting: small "!" so you still notice
+    var heat = 0.0        // the fullest live chat's context, 0 at 50% … 1 at 100%: the fur reddens, in every mood
+    var splash = Date.distantPast, splashFrom = 0.0  // when the context last dropped and from what heat: drops rain, the tint fades, steam rises
 }
 
 @MainActor final class Model: ObservableObject {
@@ -98,12 +100,12 @@ struct Look {
     /// still running (`ended` is lost on restart and a closed tab may never send SessionEnd), and the newest chat in that process
     /// (/clear and /resume swap the session id under the same one).
     /// ponytail: a recycled pid can keep a dead chat alive for the rest of its hour
-    var recentChats: [Chat] {
+    var liveChats: [Chat] {
         let live = chats.filter { !ended.contains($0.key) && $0.value.at.timeIntervalSinceNow > -3600 }.values
             .filter { $0.pid == 0 || kill($0.pid, 0) == 0 }
-        let newest = live.filter { c in c.pid == 0 || !live.contains { $0.pid == c.pid && $0.at > c.at } }
-        return Array(newest.sorted { $0.at > $1.at }.prefix(2))
+        return live.filter { c in c.pid == 0 || !live.contains { $0.pid == c.pid && $0.at > c.at } }.sorted { $0.at > $1.at }
     }
+    var recentChats: [Chat] { Array(liveChats.prefix(2)) }
     /// The menu's "Today" row: chats the status line saw today, their lines changed, and their cost.
     /// ponytail: a chat that spans midnight counts in full; splitting it by day needs a snapshot at midnight
     var today: (chats: Int, added: Int, removed: Int, usd: Double) {
@@ -338,6 +340,17 @@ struct Look {
             if let o = chats[sid], o.pct < 50 { speak("The \(n.name.isEmpty ? n.project : n.name) chat is \(Int(n.pct))% full.") }
         }
         if c != chats { chats = c }
+        // The fullest live chat heats the cat from 50% up. A drop of a third or more between snapshots is a /clear or /compact
+        // (or the tab closing), not drift: the cat gets a splash and says so. ponytail: follows the status line's clock, a turn behind the terminal
+        let live = liveChats, heat = min(1, max(0, ((live.map(\.pct).max() ?? 0) - 50) / 50))
+        if look.heat - heat >= 0.3 {
+            look.splash = now; look.splashFrom = look.heat
+            let project = live.first?.project ?? ""  // the newest live chat is the one just cleared
+            speak("Fresh start" + (project.isEmpty ? "." : " in \(project)."))
+            say([.think, .read, .edit, .work].contains(mood) ? mood : .idle,
+                Bubble(icon: "drop.fill", title: "Fresh start", detail: "The context is cleared", project: project), for: 10)
+        }
+        if look.heat != heat { look.heat = heat }
     }
 
     func readUsage() {
