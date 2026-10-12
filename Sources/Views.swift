@@ -116,6 +116,9 @@ struct MenuView: View {  // what you get when you click the cat
                          defaults.bool(forKey: "mute") ? "Unmute" : "Mute") {
                         defaults.set(!defaults.bool(forKey: "mute"), forKey: "mute"); m.objectWillChange.send()
                     }
+                    item(defaults.bool(forKey: "voice") ? "mouth.fill" : "mouth", defaults.bool(forKey: "voice") ? "Hush" : "Speak") {
+                        defaults.set(!defaults.bool(forKey: "voice"), forKey: "voice"); m.objectWillChange.send()
+                    }
                     item("xmark.circle.fill", "Quit") { NSApp.terminate(nil) }
                 }
             }
@@ -171,7 +174,7 @@ struct Root: View {
                     .transition(.scale(scale: 0.5, anchor: .bottomTrailing).combined(with: .opacity))
             }
             // Redraws only while the cat is moving; idle, asleep and minimised cost nothing.
-            TimelineView(.animation(minimumInterval: 1 / 30, paused: !m.mood.animated && Date().timeIntervalSince(m.look.eventAt) > 0.5)) { tl in
+            TimelineView(.animation(minimumInterval: 1 / 30, paused: !m.mood.animated && !m.look.speaking && Date().timeIntervalSince(m.look.eventAt) > 0.5)) { tl in
                 Canvas { g, size in drawCat(g, size, m.look, t: tl.date.timeIntervalSinceReferenceDate) }
             }
             .frame(width: 96, height: 96)

@@ -54,6 +54,7 @@ enum Mood {
 /// Everything the drawing needs, in one bag.
 struct Look {
     var mood = Mood.idle, blink = false
+    var speaking = false  // Voice is mid-phrase: the mouth moves and the timeline keeps running
     var effort = 0.0      // 0 fresh … 1 grinding: brows knit from 0.2, ears droop and typing speeds up, sweat from 0.6, heavy lids from 0.75
     var asking = false    // the last Stop summary ended in a question: the done face tilts its head
     var eventAt = Date.distantPast  // ears twitch right after an event
@@ -90,6 +91,7 @@ struct Look {
     var offset: UInt64 = 0
     @Published var usage: [String: Limit] = [:]  // five_hour / seven_day; empty for API-key users
     var warned: [String: Int] = [:]               // "<window><resets_at>" -> highest threshold already nudged, so a new window starts over
+    var voice: Process?                           // the `say` child mid-phrase; AVSpeechSynthesizer clipped the end of every phrase on macOS, NSSpeechSynthesizer is deprecated
     @Published var chats: [String: Chat] = [:]    // session -> context window
     var ended: Set<String> = []                   // SessionEnd seen; usage.json keeps them for a day
     /// The menu's context rows: the two most recent live chats from the last hour. Live: no SessionEnd seen, its Claude process
@@ -146,6 +148,24 @@ struct Look {
         if !quiet, !defaults.bool(forKey: "mute") { NSSound(named: name)?.play() }
     }
 
+    /// Spoken only with Voice on; Mute and minimised silence it like the chirps. A phrase already playing wins.
+    func speak(_ s: String) {
+        guard !quiet, !defaults.bool(forKey: "mute"), defaults.bool(forKey: "voice"), voice?.isRunning != true else { return }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/say")  // the System voice from Spoken Content settings, at its own rate: a picked voice and a slower, softer delivery sounded worse
+        p.arguments = [s]
+        guard (try? p.run()) != nil else { return }
+        voice = p
+        look.speaking = true  // tick() clears it when `say` exits
+    }
+
+    /// "Needs you · Running" in proj → "Claude needs you in proj." A whole sentence with a full stop, so the voice closes it
+    /// instead of trailing off. ponytail: headline and folder only; the detail (code, summaries) sounds awful spoken
+    func phrase(_ b: Bubble) -> String {
+        let head = b.title.components(separatedBy: " · ")[0]
+        return (head == "Needs you" ? "Claude needs you" : head) + (b.project.isEmpty ? "." : " in \(b.project).")
+    }
+
     func recall() {
         if let (m, b) = last { say(m, b, for: 10) }
         else { say(.idle, Bubble(icon: "pawprint.fill", title: "Meow!", detail: "Nothing from Claude yet"), for: 4) }
@@ -176,7 +196,7 @@ struct Look {
         b.session = sid
         pending[sid] = (m, b, Date(), term)
         muted.remove(sid)
-        if let s = sound { chirp(s) }
+        if let s = sound { chirp(s); speak(phrase(b)) }  // a sound marks the asks worth looking up for, so those are the ones spoken
         // A lower-priority wait must not cover an ask that's already up; tick() counts it in that bubble's "+1 more" instead.
         if firstPending?.key == sid { say(m, b, for: nil) } else { last = (m, b) }
     }
@@ -297,6 +317,7 @@ struct Look {
             }
         }
         if !nudge.isEmpty {  // both at once (typically at launch) share one bubble; a working cat keeps its face
+            speak(nudge.map { let p = $0.split(separator: " "); return "Your \(p[0].lowercased()) limit is at \(p[1])." }.joined(separator: " "))  // "Your session limit is at 80%."
             say([.think, .read, .edit, .work].contains(mood) ? mood : .idle,
                 Bubble(icon: "gauge.with.dots.needle.67percent", title: nudge.joined(separator: " · ") + " used", detail: resetsIn), for: 10)
         }
@@ -309,6 +330,11 @@ struct Look {
                           name: str(v["name"]), model: str(v["model"]), effort: str(v["effort"]), added: (v["added"] as? NSNumber)?.intValue ?? 0,
                           removed: (v["removed"] as? NSNumber)?.intValue ?? 0, usd: (v["usd"] as? NSNumber)?.doubleValue ?? 0,
                           pid: (v["pid"] as? NSNumber)?.int32Value ?? 0)
+        }
+        // Context never gets a bubble (the terminal shows it), but Voice calls out each climb past half: the last snapshot was
+        // below, this one is at or above. Nothing at launch, and a /compact drops it back so it can speak again.
+        for (sid, n) in c where n.pct >= 50 {
+            if let o = chats[sid], o.pct < 50 { speak("The \(n.name.isEmpty ? n.project : n.name) chat is \(Int(n.pct))% full.") }
         }
         if c != chats { chats = c }
     }
@@ -340,6 +366,7 @@ struct Look {
     }
 
     func tick(live: Bool = true) {
+        if look.speaking, voice?.isRunning != true { look.speaking = false }
         if live { poll(); readUsage() }  // readUsage is one stat unless the status line wrote a new snapshot
         let now = Date()
         // ponytail: a closed session never sends another event, so idle pleas expire; asks and stop failures never do

@@ -115,7 +115,10 @@ func drawCat(_ ctx: GraphicsContext, _ size: CGSize, _ l: Look, t: Double) {
         }
     }
     paint(h, shape(P(46.5, 46), P(53.5, 46), P(50, 50)), blush, 1.2)
-    if mood == .ask {
+    if l.speaking {  // mouth opens and closes while the voice talks, whatever the mood
+        let open = 1.5 + abs(sin(t * 9)) * 4.5
+        h.fill(oval(50 - 3, 51, 6, open), with: .color(ink))
+    } else if mood == .ask {
         h.fill(oval(47.5, 51, 5, 5.5), with: .color(ink))
     } else if mood == .oops {
         line(h, curve(P(45, 53), P(50, 50.5), P(55, 53)), 1.8)  // wobbly flat mouth

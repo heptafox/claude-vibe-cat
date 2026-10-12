@@ -33,10 +33,11 @@ Free and open source under the MIT license. One Swift file, no dependencies, and
 - **Reports failures.** A failed tool call gives it an "oops" face with the error, and so does a tool call that auto mode refused. If Claude itself stops on an API error, such as a rate limit or a billing problem, the cat says so and keeps saying so until you go back. When the session resumes by itself after a rate limit, the cat says that too, and nags again if the resume fails.
 - **Knows about helpers.** Tool calls made by subagents show as "Helper" and don't count toward the step count. When a background agent finishes, the cat waits for you to come back.
 - **Watches your plan limits.** On Pro and Max, the menu shows how much of your 5-hour session and weekly limit you've used, and when each resets. The cat gives you one heads-up when either crosses 80%, and another at 95%. From 50% up, a limit that would run out before it resets at your average pace so far shows ⚠ and the time it would run out instead of the reset time.
-- **Shows how full each chat is.** The menu also shows the context window for your two most recent chats: how full it is, and the tokens in it (`124K / 200K`). Only the menu shows this; it never pops up.
+- **Shows how full each chat is.** The menu also shows the context window for your two most recent chats: how full it is, and the tokens in it (`124K / 200K`). Only the menu shows this; it never pops up, though with **Speak** on the cat says so once when a chat passes 50%.
 - **Counts your day.** The menu's Today row shows how many chats you've had today and the lines they added and removed.
 - **Handles several sessions.** One session's chatter never hides another session's request. When more than one session is waiting, the bubble says how many more are behind it.
 - **Stays out of the way.** Bubbles auto-hide, close with the x, and hide when you hover over them. Permission requests are the one exception to hover-hide, so you can still click them.
+- **Speaks up, if you ask.** Choose **Speak** and the cat says the crucial things out loud: a permission request or question, a stopped session, a finished helper, a plan limit at 80% or 95%, and a chat whose context window passes half full. Just the headline and the folder, never the details. Off by default; **Mute** silences it too. It speaks with the System voice from System Settings → Accessibility → Spoken Content, so change it there.
 - **Faces only, if you prefer.** Click the cat and choose **Face only** to drop the speech bubbles and keep just the reactions and sounds. **Last** shows the latest message on demand.
 - **Minimises.** Choose **Minimise** and the cat shrinks to a small icon. Click it to wake it. It never steals focus, and you can drag it anywhere.
 
@@ -86,7 +87,8 @@ Bars turn orange at 50% and red at 80%. ↻ marks when a limit resets. ⚠ repla
 | Last | Shows the most recent message again |
 | Minimise | Shrinks the cat to an icon and silences it. Click the icon to wake it |
 | Face only / Show text | Toggles speech bubbles. The cat's expressions and sounds stay on |
-| Mute / Unmute | Toggles the Pop and Glass sounds |
+| Mute / Unmute | Toggles the Pop and Glass sounds, and the voice |
+| Speak / Hush | Toggles the voice for permission requests, stops, finished helpers, limit nudges and a chat passing 50% context |
 | Quit | Closes VibeCat |
 
 Drag the cat to move it. It remembers its position. Right-clicking it offers the same actions.

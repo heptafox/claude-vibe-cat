@@ -199,6 +199,7 @@ import SwiftUI
     r.handle(["event": "PermissionRequest", "session": "r", "cwd": "/r", "tool": "AskUserQuestion", "input": ["questions": [["question": "Ship it?"], ["question": "Now?"]]]])
     r.handle(["event": "Notification", "session": "r", "cwd": "/r", "message": "Claude needs your permission", "kind": "permission_prompt"])
     check(r.bubble, "Needs you · 2 questions|Ship it?|")
+    precondition(r.phrase(r.bubble!) == "Claude needs you in r.")  // what Voice would say: a sentence from the headline and folder, never the detail
     // Compaction shows while it runs.
     r.handle(["event": "PreCompact", "session": "r", "cwd": "/r"])
     check(r.bubble, "Tidying up memory|Compacting the chat to free up context|")
