@@ -97,7 +97,7 @@ Drag the cat to move it. It remembers its position. Right-clicking it offers the
 
 ## How it works
 
-`hook.sh` is a Claude Code hook that appends one JSON line per event to the log. `statusline.sh` saves the status line's `rate_limits` and each chat's `context_window` to `usage.json`. `vibecat.swift` polls both files, turns each event into a mood and a bubble, and draws the cat on a SwiftUI canvas. [CLAUDE.md](CLAUDE.md) has a deeper architecture tour.
+`hook.sh` is a Claude Code hook that appends one JSON line per event to the log. `statusline.sh` saves the status line's `rate_limits` and each chat's `context_window` to `usage.json`. `Sources/` (Swift) polls both files, turns each event into a mood and a bubble, and draws the cat on a SwiftUI canvas. [CLAUDE.md](CLAUDE.md) has a deeper architecture tour.
 
 ## Troubleshooting
 
@@ -129,7 +129,7 @@ This leaves any other hooks you have untouched.
 Contributions are welcome, from a one-line fix to a new expression.
 
 1. Fork the repo and create a branch.
-2. Build with `swiftc -O vibecat.swift -o vibecat` and run `./vibecat --test`. It prints `ok` when everything passes.
+2. Build with `swiftc -O Sources/*.swift -o vibecat` and run `./vibecat --test`. It prints `ok` when everything passes.
 3. Add a case to `selfTest()` for any logic you change.
 4. Open a pull request that says what changed and why. A screenshot helps for anything visual.
 

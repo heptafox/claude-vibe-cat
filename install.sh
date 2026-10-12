@@ -3,7 +3,7 @@
 set -e
 cd "$(dirname "$0")"
 command -v jq >/dev/null || { echo "need jq: brew install jq"; exit 1; }
-swiftc -O vibecat.swift -o vibecat && ./vibecat --test
+swiftc -O Sources/*.swift -o vibecat && ./vibecat --test
 s=~/.claude/settings.json
 [ -f "$s" ] || echo '{}' > "$s"
 cp "$s" "$s.bak"
