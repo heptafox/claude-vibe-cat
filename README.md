@@ -37,7 +37,7 @@ Free and open source under the MIT license. One Swift file, no dependencies, and
 - **Counts your day.** The menu's Today row shows how many chats you've had today and the lines they added and removed.
 - **Handles several sessions.** One session's chatter never hides another session's request. When more than one session is waiting, the bubble says how many more are behind it.
 - **Stays out of the way.** Bubbles auto-hide, close with the x, and hide when you hover over them. Permission requests are the one exception to hover-hide, so you can still click them.
-- **Speaks up, if you ask.** Turn on **Voice** and the cat says the crucial things out loud: a permission request or question, a stopped session, a finished helper, a plan limit at 80% or 95%, and a chat whose context window passes half full. Just the headline and the folder, never the details. Off every time the cat starts; **Mute** silences it too. It speaks with the System voice from System Settings → Accessibility → Spoken Content, so change it there.
+- **Speaks up, if you ask.** Turn on **Voice** and the cat says the crucial things out loud: a permission request or question, a finished job ("Claude has done the job"), a stopped session, a finished helper, a plan limit at 80% or 95%, and a chat whose context window passes half full. Just the headline and the folder, never the details. Off every time the cat starts; **Mute** silences it too. It speaks with the System voice from System Settings → Accessibility → Spoken Content, so change it there.
 - **Faces only, if you prefer.** Click the cat and choose **Face only** to drop the speech bubbles and keep just the reactions and sounds. **Last** shows the latest message on demand.
 - **Minimises.** Choose **Minimise** and the cat shrinks to a small icon. Click it to wake it. It never steals focus, and you can drag it anywhere.
 
@@ -88,7 +88,7 @@ Bars turn orange at 50% and red at 80%. ↻ marks when a limit resets. ⚠ repla
 | Minimise | Shrinks the cat to an icon and silences it. Click the icon to wake it |
 | Face only / Show text | Toggles speech bubbles. The cat's expressions and sounds stay on |
 | Mute / Unmute | Toggles the Pop and Glass sounds, and the voice |
-| Voice on / Voice off | Toggles the voice for permission requests, stops, finished helpers, limit nudges and a chat passing 50% context |
+| Voice on / Voice off | Toggles the voice for permission requests, finished jobs, stops, finished helpers, limit nudges and a chat passing 50% context |
 | Quit | Closes VibeCat |
 
 Drag the cat to move it. It remembers its position. Right-clicking it offers the same actions.

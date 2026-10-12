@@ -286,6 +286,7 @@ struct Look {
             look.asking = summary.hasSuffix("?")
             said[sid] = summary
             chirp("Glass")
+            speak("Claude has done the job" + (project.isEmpty ? "." : " in \(project)."))
             say(.done, Bubble(icon: "checkmark.circle.fill", title: title, detail: summary, project: project), for: 30)
         case "SessionEnd":
             sessions[sid] = nil
