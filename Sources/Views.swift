@@ -116,9 +116,12 @@ struct MenuView: View {  // what you get when you click the cat
                          defaults.bool(forKey: "mute") ? "Unmute" : "Mute") {
                         defaults.set(!defaults.bool(forKey: "mute"), forKey: "mute"); m.objectWillChange.send()
                     }
-                    item(defaults.bool(forKey: "voice") ? "mouth.fill" : "mouth", defaults.bool(forKey: "voice") ? "Hush" : "Speak") {
-                        defaults.set(!defaults.bool(forKey: "voice"), forKey: "voice"); m.objectWillChange.send()
+                    let voice = defaults.bool(forKey: "voice")
+                    item(voice ? "mouth.fill" : "mouth", voice ? "Voice on" : "Voice off", on: voice) {
+                        defaults.set(!voice, forKey: "voice"); m.objectWillChange.send()
                     }
+                    .help(voice ? "The cat speaks asks, stops, finished helpers and limit nudges. Click to turn off"
+                               : "Click so the cat speaks asks, stops, finished helpers and limit nudges")
                     item("xmark.circle.fill", "Quit") { NSApp.terminate(nil) }
                 }
             }
@@ -147,11 +150,13 @@ struct MenuView: View {  // what you get when you click the cat
         .font(.system(size: 12)).lineLimit(1)
         .accessibilityElement(children: .combine)
     }
-    func item(_ icon: String, _ label: String, _ act: @escaping () -> Void) -> some View {
+    /// `on` tints the button so a setting reads as a state, not an action.
+    func item(_ icon: String, _ label: String, on: Bool = false, _ act: @escaping () -> Void) -> some View {
         Button(action: act) {
             VStack(spacing: 3) { Image(systemName: icon).font(.system(size: 15)); Text(label).font(.system(size: 11, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.8) }
                 .frame(maxWidth: .infinity).padding(.vertical, 6)
-                .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+                .foregroundStyle(on ? Color.accentColor : .primary)
+                .background(on ? Color.accentColor.opacity(0.15) : Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
     }

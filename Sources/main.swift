@@ -17,6 +17,7 @@ MainActor.assumeIsolated {
                                              attributes: [.posixPermissions: 0o700])
     FileManager.default.createFile(atPath: eventsPath, contents: nil, attributes: [.posixPermissions: 0o600])
 
+    defaults.removeObject(forKey: "voice")  // voice is per launch: it always starts off
     let model = Model()
     let screen = NSScreen.main!.visibleFrame
     var origin = P(screen.maxX - 450, screen.minY + 6)
