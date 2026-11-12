@@ -112,7 +112,7 @@ import SwiftUI
     precondition(h.chats["h"]?.name == "fix bug" && h.chats["h"]?.setup == "Opus · xhigh" && h.chats["h"]?.usd == 0.42)
     precondition(Chat(project: "p", pct: 0, tokens: 0, size: 0, at: .now, model: "Haiku").setup == "Haiku")  // no effort setting
     h.handle(["event": "UserPromptSubmit", "session": "h", "cwd": "/h", "prompt": "go"])
-    precondition(h.look.effort == 0.35)  // an xhigh chat looks determined before its first tool call
+    precondition(abs(h.look.effort - 0.35) < 0.01)  // an xhigh chat looks determined before its first tool call
     h.handle(["event": "Stop", "session": "h", "cwd": "/h", "summary": "ok"])
     check(h.bubble, "Done · 0s · +3 −1|ok|")
     precondition(h.look.effort == 0 && !h.look.asking)
@@ -122,7 +122,7 @@ import SwiftUI
     precondition(h.look.effort == 0.7 && h.look.asking)
     precondition(rough("Fixed the error, tests pass") == false && rough("Can’t build it") && rough("The build failed"))
     h.handle(["event": "UserPromptSubmit", "session": "h", "cwd": "/h", "prompt": "yes"])
-    precondition(h.look.effort == 0.35 && !h.look.asking)
+    precondition(abs(h.look.effort - 0.35) < 0.01 && !h.look.asking)
     precondition(!n.muted.contains("d"))
     // Face-only: the mood still changes, but no text is shown unless asked for with "Last".
     n.faceOnly = true
@@ -196,12 +196,62 @@ import SwiftUI
     let r = Model()
     r.quiet = false; r.faceOnly = false
     r.handle(["event": "PreToolUse", "session": "r", "cwd": "/r", "tool": "Bash", "input": ["command": "npm test", "description": "Run tests"]])
-    r.running["r"]?.since = Date().addingTimeInterval(-125); r.hideAt = .distantPast; r.tick(live: false)
+    r.running["r"]?[0].since = Date().addingTimeInterval(-125); r.hideAt = .distantPast; r.tick(live: false)
     check(r.bubble, "Running · 2m 5s|Run tests|npm test")
     precondition(r.mood == .work)
     r.handle(["event": "PostToolUse", "session": "r", "cwd": "/r", "tool": "Bash"])
     r.hideAt = .distantPast; r.tick(live: false)
     precondition(r.bubble == nil && r.running.isEmpty)
+    // A helper's calls end without ending the Task that sent it, which stays up with its clock.
+    r.handle(["event": "PreToolUse", "session": "r", "cwd": "/r", "tool": "Task", "input": ["description": "Explore"]])
+    r.handle(["event": "PreToolUse", "session": "r", "cwd": "/r", "tool": "Read", "input": ["file_path": "/f.txt"], "agent": "Explore"])
+    r.handle(["event": "PostToolUse", "session": "r", "cwd": "/r", "tool": "Read", "agent": "Explore"])
+    r.running["r"]?[0].since = Date().addingTimeInterval(-60); r.hideAt = .distantPast; r.tick(live: false)
+    check(r.bubble, "Sending a helper · 1m|Explore|")
+    r.handle(["event": "PostToolUse", "session": "r", "cwd": "/r", "tool": "Task"])
+    precondition(r.running.isEmpty)
+    // Effort follows the hardest-working session: a fresh chat's first step doesn't relax a grinding one, and stays per session.
+    let w = Model()
+    w.quiet = false
+    w.handle(["event": "UserPromptSubmit", "session": "g", "cwd": "/g", "prompt": "go"])
+    for _ in 0..<15 { w.handle(["event": "PreToolUse", "session": "g", "cwd": "/g", "tool": "Bash", "input": [:]]) }
+    w.handle(["event": "UserPromptSubmit", "session": "f", "cwd": "/f", "prompt": "hi"])
+    w.handle(["event": "PreToolUse", "session": "f", "cwd": "/f", "tool": "Read", "input": [:]])
+    precondition(abs(w.look.effort - 0.5) < 0.01)
+    w.handle(["event": "PostToolUseFailure", "session": "f", "cwd": "/f", "tool": "Bash", "error": "x"])
+    precondition(abs(w.look.effort - 0.5) < 0.01 && abs(w.effort("f") - 0.28) < 0.01)  // f's failure wears f, not the face past g
+    w.handle(["event": "SessionEnd", "session": "g", "cwd": "/g"])
+    precondition(abs(w.look.effort - 0.28) < 0.01)
+    // Heat cools when the fullest chat's process exits, with no splash: a closed tab is not a clear. A /clear (same process, new
+    // session id) does splash, and names that chat's folder.
+    let sleeper = Process()
+    sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep"); sleeper.arguments = ["30"]
+    try! sleeper.run()
+    let k = Model()
+    k.quiet = false; k.faceOnly = false
+    k.noteUsage(["chats": ["hot": ["cwd": "/x/hot", "pct": 90, "at": t - 5, "pid": sleeper.processIdentifier],
+                           "p1": ["cwd": "/x/mine", "pct": 90, "at": t - 20, "pid": me]]])
+    precondition(abs(k.look.heat - 0.8) < 0.01)
+    let y = Model()
+    y.quiet = false; y.faceOnly = false
+    let closing: [String: Any] = ["chats": ["hot": ["cwd": "/x/hot", "pct": 90, "at": t - 5, "pid": sleeper.processIdentifier],
+                                            "b": ["cwd": "/x/b", "pct": 20, "at": t - 1, "pid": me]]]
+    y.noteUsage(closing)
+    precondition(abs(y.look.heat - 0.8) < 0.01)
+    sleeper.terminate(); sleeper.waitUntilExit()
+    y.noteUsage(closing)
+    precondition(y.look.heat == 0 && y.look.splash == .distantPast && y.bubble == nil)  // the tab closed: cool, no "Fresh start"
+    k.recheckHeat()
+    precondition(abs(k.look.heat - 0.8) < 0.01)  // p1 is still hot
+    k.noteUsage(["chats": ["hot": ["cwd": "/x/hot", "pct": 90, "at": t - 5, "pid": sleeper.processIdentifier],
+                           "p1": ["cwd": "/x/mine", "pct": 90, "at": t - 20, "pid": me],
+                           "p2": ["cwd": "/x/mine2", "pct": 3, "at": t, "pid": me]]])
+    precondition(k.look.heat == 0 && k.look.splash.timeIntervalSinceNow > -1 && k.bubble?.project == "mine2")
+    let z = Model()
+    z.noteUsage(["chats": ["a": ["cwd": "/x/a", "pct": 90, "at": t - 5], "b": ["cwd": "/x/b", "pct": 20, "at": t, "pid": me]]])
+    z.chats["a"]?.at = Date(timeIntervalSince1970: t - 4000)  // aged out of the hour with no new snapshot
+    z.recheckHeat()
+    precondition(z.look.heat == 0 && z.look.splash == .distantPast)
     // The idle wait keeps Claude's last summary.
     r.handle(["event": "Stop", "session": "r", "cwd": "/r", "summary": "Tests **pass**."])
     r.handle(["event": "Notification", "session": "r", "cwd": "/r", "message": "Claude is waiting for your input", "kind": "idle_prompt"])
@@ -216,7 +266,7 @@ import SwiftUI
     r.handle(["event": "PreCompact", "session": "r", "cwd": "/r"])
     check(r.bubble, "Tidying up memory|Compacting the chat to free up context|")
     precondition(r.mood == .think && r.pending.isEmpty)
-    r.running["r"]?.since = Date().addingTimeInterval(-30.2); r.hideAt = .distantPast; r.tick(live: false)
+    r.running["r"]?[0].since = Date().addingTimeInterval(-30.2); r.hideAt = .distantPast; r.tick(live: false)
     check(r.bubble, "Tidying up memory · 30s|Compacting the chat to free up context|")
     r.handle(["event": "PostCompact", "session": "r", "cwd": "/r"])
     precondition(r.bubble == nil)

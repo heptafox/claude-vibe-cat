@@ -112,14 +112,9 @@ struct MenuView: View {  // what you get when you click the cat
                     item("bubble.left.fill", "Last") { m.recall() }
                     item("moon.zzz.fill", "Minimise") { m.setQuiet(true) }
                     item(m.faceOnly ? "text.bubble.fill" : "face.smiling.fill", m.faceOnly ? "Show text" : "Face only") { m.toggleFaceOnly() }
-                    item(defaults.bool(forKey: "mute") ? "speaker.slash.fill" : "speaker.wave.2.fill",
-                         defaults.bool(forKey: "mute") ? "Unmute" : "Mute") {
-                        defaults.set(!defaults.bool(forKey: "mute"), forKey: "mute"); m.objectWillChange.send()
-                    }
-                    let voice = defaults.bool(forKey: "voice")
-                    item(voice ? "mouth.fill" : "mouth", voice ? "Voice on" : "Voice off", on: voice) {
-                        defaults.set(!voice, forKey: "voice"); m.objectWillChange.send()
-                    }
+                    item(m.mute ? "speaker.slash.fill" : "speaker.wave.2.fill", m.mute ? "Unmute" : "Mute") { m.mute.toggle() }
+                    let voice = m.voiceOn
+                    item(voice ? "mouth.fill" : "mouth", voice ? "Voice on" : "Voice off", on: voice) { m.voiceOn.toggle() }
                     .help(voice ? "The cat speaks asks, stops, finished helpers and limit nudges. Click to turn off"
                                : "Click so the cat speaks asks, stops, finished helpers and limit nudges")
                     item("xmark.circle.fill", "Quit") { NSApp.terminate(nil) }

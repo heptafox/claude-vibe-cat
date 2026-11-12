@@ -17,9 +17,9 @@ MainActor.assumeIsolated {
                                              attributes: [.posixPermissions: 0o700])
     FileManager.default.createFile(atPath: eventsPath, contents: nil, attributes: [.posixPermissions: 0o600])
 
-    defaults.removeObject(forKey: "voice")  // voice is per launch: it always starts off
+    // No display yet (early login, a closed lid on a headless boot): exit non-zero so launchd tries again in a few seconds.
+    guard let screen = NSScreen.main?.visibleFrame else { exit(1) }
     let model = Model()
-    let screen = NSScreen.main!.visibleFrame
     var origin = P(screen.maxX - 450, screen.minY + 6)
     if let s = defaults.string(forKey: "origin"), NSScreen.screens.contains(where: { $0.frame.contains(NSPointFromString(s)) }) {
         origin = NSPointFromString(s)  // where you left it, if that monitor is still here

@@ -2,7 +2,7 @@
 
 A tiny desktop cat that shows what [Claude Code](https://claude.com/claude-code) is doing, so you can look away from the terminal and still know when it needs you.
 
-Free and open source under the MIT license. One Swift file, no dependencies, and nothing leaves your machine.
+Free and open source under the MIT license. A few Swift files and shell scripts, no dependencies, and nothing leaves your machine.
 
 <p align="center"><img src="docs/menu.png" width="520" alt="The menu: plan usage, model and effort, context per chat, lines changed today, and controls"></p>
 
@@ -112,26 +112,20 @@ Drag the cat to move it. It remembers its position. Right-clicking it offers the
 
 ## Uninstall
 
-From the project folder, stop the cat, remove the hooks, restore your previous status line, and delete the cat's data:
+From the project folder:
 
 ```sh
-launchctl bootout "gui/$(id -u)/com.heptafox.vibecat"; rm ~/Library/LaunchAgents/com.heptafox.vibecat.plist
-jq --arg h "$PWD/hook.sh" --arg sl "$PWD/statusline.sh" --arg prev "$(cat ~/.vibecat/statusline-next 2>/dev/null)" \
-  '.hooks |= (map_values(map(select(all(.hooks[]; .command != $h)))) | with_entries(select(.value | length > 0)))
-   | if .statusLine.command == $sl then (if $prev == "" then del(.statusLine) else .statusLine.command = $prev end) else . end' \
-  ~/.claude/settings.json > /tmp/settings.new && mv /tmp/settings.new ~/.claude/settings.json
-rm -rf ~/.vibecat
-defaults delete vibecat
+./install.sh --uninstall
 ```
 
-This leaves any other hooks you have untouched.
+It stops the cat, removes its hooks, restores the status line you had before, and deletes the cat's data and settings. Any other hooks you have stay as they are. `~/.claude/settings.json.pre-vibecat` keeps your settings as they were before the first install.
 
 ## Contributing
 
 Contributions are welcome, from a one-line fix to a new expression.
 
 1. Fork the repo and create a branch.
-2. Build with `swiftc -O Sources/*.swift -o vibecat` and run `./vibecat --test`. It prints `ok` when everything passes.
+2. Run `./test.sh`. It builds a debug copy, runs the self-test and checks the hook and status line scripts, and prints `ok` when everything passes. CI runs the same script on every push.
 3. Add a case to `selfTest()` for any logic you change.
 4. Open a pull request that says what changed and why. A screenshot helps for anything visual.
 
@@ -143,7 +137,7 @@ echo '{"event":"Notification","session":"x","cwd":"/demo","message":"Allow Bash?
 
 Set `VIBECAT_EVENTS=/path/to/file.jsonl` to run a test instance against a scratch log instead of the real one.
 
-The project is deliberately one file with no dependencies. Please keep it that way unless a change clearly needs more.
+The project deliberately has no dependencies and no Xcode project. Please keep it that way unless a change clearly needs more.
 
 Ideas that would be welcome:
 

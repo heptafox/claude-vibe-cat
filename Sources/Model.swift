@@ -71,6 +71,8 @@ struct Look {
     @Published var quiet = defaults.bool(forKey: "quiet")
     @Published var faceOnly = defaults.bool(forKey: "faceOnly")  // reactions without speech bubbles
     @Published var peeking = false                                // "Last" in face-only mode shows one bubble on request
+    @Published var mute = defaults.bool(forKey: "mute") { didSet { defaults.set(mute, forKey: "mute") } }  // no chirps, no voice
+    @Published var voiceOn = false                                // per launch, never saved: it always starts off
     var showsText: Bool { !faceOnly || peeking }
     var muted: Set<String> = []  // sessions whose current ask/wait bubble the user closed; a fresh notification un-mutes
     var hoverTask: DispatchWorkItem?
@@ -86,11 +88,12 @@ struct Look {
     }
     var askDetail: [String: Bubble] = [:]  // what PermissionRequest said a session is about to ask for; the Notification that follows shows it
     var said: [String: String] = [:]       // each session's last Stop summary, so "Ready when you are" still says what Claude concluded
-    /// Each session's latest tool call, until any later event from that session says it ended. tick() keeps a long one on screen.
-    var running: [String: (mood: Mood, bubble: Bubble, since: Date)] = [:]
+    /// Each session's tool calls still going, oldest first. A PostToolUse ends the newest call of its tool (a Task outlives its
+    /// helper's calls); any other event from that session ends them all. tick() keeps a long one on screen.
+    var running: [String: [(tool: String, mood: Mood, bubble: Bubble, since: Date)]] = [:]
     var runShown: Bubble?                  // the "still running" bubble tick() last put up, so it can refresh its clock
     var lastEvent = Date()
-    var sessions: [String: (start: Date, steps: Int, seen: Date)] = [:]
+    var sessions: [String: (start: Date, steps: Int, seen: Date, fails: Int)] = [:]
     var offset: UInt64 = 0
     @Published var usage: [String: Limit] = [:] {  // five_hour / seven_day; empty for API-key users
         didSet {  // the collar follows every path usage changes on: a climb, a new window, a window that passed its reset
@@ -112,6 +115,10 @@ struct Look {
         return live.filter { c in c.pid == 0 || !live.contains { $0.pid == c.pid && $0.at > c.at } }.sorted { $0.at > $1.at }
     }
     var recentChats: [Chat] { Array(liveChats.prefix(2)) }
+    /// The fullest live chat's context, 0 at 50% … 1 at 100%.
+    var liveHeat: Double { min(1, max(0, ((liveChats.map(\.pct).max() ?? 0) - 50) / 50)) }
+    /// Between snapshots the fullest chat can still go away (its process exits, it ages out of the hour): cool without a splash.
+    func recheckHeat() { let h = liveHeat; if look.heat != h { look.heat = h } }
     /// The menu's "Today" row: chats the status line saw today, their lines changed, and their cost.
     /// ponytail: a chat that spans midnight counts in full; splitting it by day needs a snapshot at midnight
     var today: (chats: Int, added: Int, removed: Int, usd: Double) {
@@ -153,12 +160,12 @@ struct Look {
     }
 
     func chirp(_ name: String) {
-        if !quiet, !defaults.bool(forKey: "mute") { NSSound(named: name)?.play() }
+        if !quiet, !mute { NSSound(named: name)?.play() }
     }
 
     /// Spoken only with Voice on; Mute and minimised silence it like the chirps. A phrase already playing wins.
     func speak(_ s: String) {
-        guard !quiet, !defaults.bool(forKey: "mute"), defaults.bool(forKey: "voice"), voice?.isRunning != true else { return }
+        guard !quiet, !mute, voiceOn, voice?.isRunning != true else { return }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/say")  // the System voice from Spoken Content settings, at its own rate: a picked voice and a slower, softer delivery sounded worse
         p.arguments = [s]
@@ -209,40 +216,51 @@ struct Look {
         if firstPending?.key == sid { say(m, b, for: nil) } else { last = (m, b) }
     }
 
+    /// One session's effort: its chat's configured level, then steps, wall time and failures.
+    /// ponytail: no notion of what the task actually is
+    func effort(_ sid: String, now: Date = Date()) -> Double {
+        guard let s = sessions[sid] else { return 0 }
+        let floor = effortFloor[chats[sid]?.effort ?? ""] ?? 0
+        return min(1, floor + Double(s.steps) / 30 + now.timeIntervalSince(s.start) / 600 + Double(s.fails) / 4)
+    }
+    /// The face shows the hardest-working session, so a fresh chat's first step doesn't relax a grinding one.
+    func strain() { look.effort = sessions.keys.map { effort($0) }.max() ?? 0 }
+
     func handle(_ e: [String: Any]) {
         let now = Date(), sid = str(e["session"]), project = fileName(e["cwd"]), event = str(e["event"]), term = str(e["term"])
         let helper = str(e["agent"]).isEmpty ? "" : "Helper · "  // hooks fire inside subagents too, with agent_type set
         lastEvent = now
         if event != "PostToolUse" { look.eventAt = now }  // ears twitch once per tool call, not twice
         sessions[sid]?.seen = now
-        running[sid] = nil  // whatever this session was running has ended (or is now waiting on you)
+        if event.hasPrefix("PostToolUse"), let i = running[sid]?.lastIndex(where: { $0.tool == str(e["tool"]) }) {
+            running[sid]?.remove(at: i)
+            if running[sid]?.isEmpty == true { running[sid] = nil }
+        } else if event != "PreToolUse" { running[sid] = nil }  // whatever this session was running has ended (or is now waiting on you)
         if event != "SessionEnd" { ended.remove(sid) }  // a resumed chat keeps its session id
         if event != "Notification" { pending[sid] = nil; muted.remove(sid); askDetail[sid] = nil }  // the session moved on, so the user answered
         look.asking = false
-        let floor = effortFloor[chats[sid]?.effort ?? ""] ?? 0
         switch event {
         case "UserPromptSubmit":
-            sessions[sid] = (now, 0, now)
+            sessions[sid] = (now, 0, now, 0)
             said[sid] = nil
-            look.effort = floor
+            strain()
             let prompt = str(e["prompt"]).replacingOccurrences(of: "\n", with: " ")
             say(.think, Bubble(icon: "sparkles", title: "On it…", detail: prompt, project: project), for: 10)
         case "PreToolUse":
             if helper.isEmpty {  // ponytail: helpers' calls still drive the mood and bubble, just not the step count
-                sessions[sid, default: (now, 0, now)].steps += 1
-                let s = sessions[sid]!
-                // ponytail: effort = configured level, steps and wall time; no notion of what the task actually is
-                look.effort = min(1, floor + Double(s.steps) / 30 + now.timeIntervalSince(s.start) / 600)
+                sessions[sid, default: (now, 0, now, 0)].steps += 1
+                strain()
             }
             let tool = str(e["tool"])
             var b = describe(tool: tool, e["input"] as? [String: Any] ?? [:])
             b.title = helper + b.title; b.project = project
-            running[sid] = (moodFor(tool: tool), b, now)
+            running[sid, default: []].append((tool, moodFor(tool: tool), b, now))
             say(moodFor(tool: tool), b, for: 10)
         case "PostToolUseFailure":
             let err = str(e["error"])
             guard !err.isEmpty else { return }
-            look.effort = min(1, look.effort + 0.25)  // failures wear the cat down
+            sessions[sid, default: (now, 0, now, 0)].fails += 1  // failures wear the cat down
+            strain()
             say(.oops, Bubble(icon: "exclamationmark.triangle.fill", title: helper + "Oops", detail: "\(str(e["tool"])) didn't go well",
                               code: firstLine(err), project: project), for: 8)
         case "PermissionDenied":  // auto mode refused a tool call; Claude carries on, so this is news rather than an ask
@@ -277,12 +295,13 @@ struct Look {
             }
         case "StopFailure":  // API error (rate limit, overloaded, billing…): the session is dead until you act, so it nags like an ask
             sessions[sid] = nil
-            look.effort = 0
+            strain()
             pend(sid, .oops, Bubble(icon: "exclamationmark.triangle.fill", title: "Claude stopped",
                                     detail: str(e["kind"]).replacingOccurrences(of: "_", with: " "), code: firstLine(str(e["error"])), project: project),
                  term, sound: "Basso")
         case "Stop":
             var title = "All done!"
+            let worn = effort(sid)
             if let s = sessions.removeValue(forKey: sid) {
                 title = "Done · " + (durations.string(from: now.timeIntervalSince(s.start)) ?? "")
                 if s.steps > 0 { title += " · \(s.steps) step\(s.steps == 1 ? "" : "s")" }
@@ -290,7 +309,7 @@ struct Look {
                 if let c = chats[sid], c.added + c.removed > 0 { title += " · +\(c.added) −\(c.removed)" }
             }
             let summary = plain(str(e["summary"]))
-            look.effort = rough(summary) ? max(look.effort, 0.7) : 0  // a struggle ends with a "phew": sweat stays on the done face
+            look.effort = rough(summary) ? max(worn, 0.7) : 0  // a struggle ends with a "phew": sweat stays on the done face
             look.asking = summary.hasSuffix("?")
             said[sid] = summary
             chirp("Glass")
@@ -300,9 +319,10 @@ struct Look {
             sessions[sid] = nil
             said[sid] = nil
             ended.insert(sid)
+            strain()
         case "PreCompact":  // /compact, or automatic when the context fills; held like a long tool call until PostCompact
             let b = Bubble(icon: "archivebox.fill", title: "Tidying up memory", detail: "Compacting the chat to free up context", project: project)
-            running[sid] = (.think, b, now)
+            running[sid] = [("", .think, b, now)]
             say(.think, b, for: 10)
         case "PostCompact":
             if bubble?.icon == "archivebox.fill" { dismiss() }  // the title may carry a clock by now
@@ -345,13 +365,21 @@ struct Look {
         for (sid, n) in c where n.pct >= 50 {
             if let o = chats[sid], o.pct < 50 { speak("The \(n.name.isEmpty ? n.project : n.name) chat is \(Int(n.pct))% full.") }
         }
+        // A chat whose context fell 15 points or more since the last snapshot was cleared or compacted: the same session, or a
+        // new session id in the same Claude process (/clear swaps it). A tab closing cools the cat too, but gets no splash.
+        // ponytail: a /resume to an emptier chat in the same process also reads as a clear
+        let old = chats
+        let cleared = c.first { sid, n in
+            let o = old[sid] ?? old.values.filter { n.pid != 0 && $0.pid == n.pid && $0.at < n.at }.max { $0.at < $1.at }
+            return o.map { $0.pct - n.pct >= 15 } ?? false
+        }?.value
         if c != chats { chats = c }
-        // The fullest live chat heats the cat from 50% up. A drop of a third or more between snapshots is a /clear or /compact
-        // (or the tab closing), not drift: the cat gets a splash and says so. ponytail: follows the status line's clock, a turn behind the terminal
-        let live = liveChats, heat = min(1, max(0, ((live.map(\.pct).max() ?? 0) - 50) / 50))
-        if look.heat - heat >= 0.3 {
+        // The fullest live chat heats the cat from 50% up; a cleared chat that drops it by 0.3 or more gets a splash, and says so.
+        // ponytail: follows the status line's clock, a turn behind the terminal
+        let heat = liveHeat
+        if look.heat - heat >= 0.3, let n = cleared {
             look.splash = now; look.splashFrom = look.heat
-            let project = live.first?.project ?? ""  // the newest live chat is the one just cleared
+            let project = n.project
             speak("Fresh start" + (project.isEmpty ? "." : " in \(project)."))
             say([.think, .read, .edit, .work].contains(mood) ? mood : .idle,
                 Bubble(icon: "drop.fill", title: "Fresh start", detail: "The context is cleared", project: project), for: 10)
@@ -364,6 +392,7 @@ struct Look {
               let d = FileManager.default.contents(atPath: usagePath) else {
             let live = usage.filter { $0.value.resets > Date() }  // a window passed with no fresh snapshot yet
             if live != usage { usage = live }
+            recheckHeat()
             return
         }
         usageStamp = at
@@ -415,8 +444,8 @@ struct Look {
         }
         // A tool call still going after its bubble timed out (a build, a test run) comes back with its clock.
         // ponytail: foreground Bash stops at 10 min, so an entry past 11 is a call whose end we never heard (interrupt, crash)
-        running = running.filter { now.timeIntervalSince($0.value.since) < 660 }
-        if bubble == nil || bubble == runShown, let r = running.values.max(by: { $0.since < $1.since }), now.timeIntervalSince(r.since) >= 10 {
+        running = running.mapValues { $0.filter { now.timeIntervalSince($0.since) < 660 } }.filter { !$0.value.isEmpty }
+        if bubble == nil || bubble == runShown, let r = running.values.joined().max(by: { $0.since < $1.since }), now.timeIntervalSince(r.since) >= 10 {
             var want = r.bubble
             want.title += " · " + (durations.string(from: now.timeIntervalSince(r.since)) ?? "")
             if bubble != want { bubble = want; mood = r.mood }
